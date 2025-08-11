@@ -1,7 +1,15 @@
 # ccpm_module3.py
 from typing import List, Dict, Optional, Set, Tuple, Union, Any
 from dataclasses import dataclass
+from enum import Enum
 import pandas as pd
+
+
+class TaskStatus(Enum):
+    """Execution status of a task."""
+    NOT_STARTED = "Not Started"
+    IN_PROGRESS = "In Progress"
+    COMPLETED = "Completed"
 
 
 # ------------------------
@@ -65,11 +73,11 @@ class ProjectCalendar:
             d -= 1
         return d
 
-    def to_dict(self) -> Dict:
-        return {"non_working_days": sorted(self.non_working_days)}
+    def to_dict(self) -> Dict[str, Any]:
+        return {"non_working_days": sorted(list(self.non_working_days))}
 
     @classmethod
-    def from_dict(cls, data: Dict):
+    def from_dict(cls, data: Dict[str, Any]) -> "ProjectCalendar":
         return cls(non_working_days=data.get("non_working_days", []))
 
 
@@ -93,16 +101,16 @@ class Resource:
             and day_index not in self.non_working_days
         )
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
             "name": self.name,
-            "non_working_days": sorted(self.non_working_days),
+            "non_working_days": sorted(list(self.non_working_days)),
             "capacity_per_day": self.capacity_per_day,
         }
 
     @classmethod
-    def from_dict(cls, data: Dict):
+    def from_dict(cls, data: Dict[str, Any]) -> "Resource":
         return cls(
             resource_id=data["id"],
             name=data["name"],
@@ -113,7 +121,7 @@ class Resource:
 
 class Task:
     """
-    Represents a project task in CCPM.
+    Represents a project task in CCPM, enhanced with execution tracking.
     """
 
     def __init__(
@@ -128,11 +136,12 @@ class Task:
         self.id = task_id
         self.name = name
         self.duration = duration
-        self.resources = resources or []  # list of resource IDs
+        self.resources = resources or []
         self.predecessors = predecessors or []
         self.description = description
-        # schedule fields
-        self.slack = 0
+
+        # Schedule fields
+        self.slack: int = 0
         self.asap_start: Optional[int] = None
         self.asap_finish: Optional[int] = None
         self.alap_start: Optional[int] = None
@@ -141,17 +150,64 @@ class Task:
         self.scheduled_finish: Optional[int] = None
         self.on_critical_chain: bool = False
         self.successors: List[str] = []
+
+        # CCPM and execution fields
         self.original_duration: Optional[int] = None
+        self.ccpm_duration: Optional[int] = None
+        self.safety_removed: int = 0
+        self.execution_status: TaskStatus = TaskStatus.NOT_STARTED
+        self.actual_start: Optional[int] = None
+        self.actual_finish: Optional[int] = None
+
+    def apply_ccpm_safety_reduction(self, safety_factor: float = 0.5) -> None:
+        """Reduces task duration for CCPM planning and stores original."""
+        if self.original_duration is None:
+            self.original_duration = self.duration
+
+        # Use floor for aggressive scheduling
+        self.ccpm_duration = int(self.original_duration * (1 - safety_factor))
+        self.safety_removed = self.original_duration - self.ccpm_duration
+        self.duration = self.ccpm_duration
+
+    def revert_to_original_duration(self) -> bool:
+        """Reverts task duration to its original value for replanning."""
+        if self.original_duration is not None:
+            self.duration = self.original_duration
+            self.original_duration = None
+            self.ccpm_duration = None
+            self.safety_removed = 0
+            return True
+        return False
+
+    def update_progress(
+        self,
+        status: TaskStatus,
+        actual_start: Optional[int] = None,
+        actual_finish: Optional[int] = None
+    ) -> None:
+        """Updates the task's execution status and actual times."""
+        self.execution_status = status
+        if actual_start is not None:
+            self.actual_start = actual_start
+        if actual_finish is not None:
+            self.actual_finish = actual_finish
+
+    def calculate_delay(self) -> int:
+        """Calculates delay based on scheduled vs. actual finish."""
+        if self.actual_finish is not None and self.scheduled_finish is not None:
+            delay = self.actual_finish - self.scheduled_finish
+            # Consider only delays, not early finishes
+            return max(0, delay)
+        return 0
 
     def get_predecessors(self) -> List[str]:
-        """Returns a list of predecessor task IDs."""
         return self.predecessors
 
     def get_successors(self) -> List[str]:
-        """Returns a list of successor task IDs."""
         return self.successors
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes task to a dictionary."""
         return {
             "id": self.id,
             "name": self.name,
@@ -167,16 +223,19 @@ class Task:
             "scheduled_finish": self.scheduled_finish,
             "on_critical_chain": self.on_critical_chain,
             "original_duration": self.original_duration,
+            "ccpm_duration": self.ccpm_duration,
+            "safety_removed": self.safety_removed,
+            "execution_status": self.execution_status.name,
+            "actual_start": self.actual_start,
+            "actual_finish": self.actual_finish,
         }
 
     @classmethod
-    def from_dict(cls, data: Dict):
-        resources = [
-            r.strip() for r in str(data.get("resources", "")).split(",") if r.strip()
-        ]
-        preds = [
-            p.strip() for p in str(data.get("predecessors", "")).split(",") if p.strip()
-        ]
+    def from_dict(cls, data: Dict[str, Any]) -> "Task":
+        """Deserializes task from a dictionary."""
+        resources = [r.strip() for r in str(data.get("resources", "")).split(",") if r.strip()]
+        preds = [p.strip() for p in str(data.get("predecessors", "")).split(",") if p.strip()]
+
         t = cls(
             task_id=data["id"],
             name=data.get("name", data["id"]),
@@ -185,6 +244,8 @@ class Task:
             predecessors=preds,
             description=data.get("description", ""),
         )
+
+        # Restore all fields
         t.asap_start = data.get("asap_start")
         t.asap_finish = data.get("asap_finish")
         t.alap_start = data.get("alap_start")
@@ -193,6 +254,16 @@ class Task:
         t.scheduled_finish = data.get("scheduled_finish")
         t.on_critical_chain = bool(data.get("on_critical_chain", False))
         t.original_duration = data.get("original_duration")
+        t.ccpm_duration = data.get("ccpm_duration")
+        t.safety_removed = data.get("safety_removed", 0)
+
+        status_str = data.get("execution_status")
+        if status_str and status_str in TaskStatus.__members__:
+            t.execution_status = TaskStatus[status_str]
+
+        t.actual_start = data.get("actual_start")
+        t.actual_finish = data.get("actual_finish")
+
         return t
 
 
@@ -215,13 +286,13 @@ class Buffer(Task):
         )
         self.linked_task = linked_task
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> Dict[str, Any]:
         d = super().to_dict()
         d["linked_task"] = self.linked_task
         return d
 
     @classmethod
-    def from_dict(cls, data: Dict):
+    def from_dict(cls, data: Dict[str, Any]) -> "Buffer":
         buf = cls(
             buffer_id=data["id"],
             name=data.get("name", data["id"]),
@@ -248,13 +319,13 @@ class ProjectBuffer(Buffer):
         )
         self.delivery_date = delivery_date
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> Dict[str, Any]:
         d = super().to_dict()
         d["delivery_date"] = self.delivery_date
         return d
 
     @classmethod
-    def from_dict(cls, data: Dict):
+    def from_dict(cls, data: Dict[str, Any]) -> "ProjectBuffer":
         buf = cls(
             buffer_id=data["id"],
             name=data.get("name", data["id"]),
@@ -354,6 +425,8 @@ def integrate_buffers_into_schedule(
 
     # Wire feeding buffers into the graph
     for buffer in feeding_buffers.values():
+        if not buffer.linked_task:
+            continue
         merge_point_task = tasks[buffer.linked_task]
 
         # The buffer's successor is the merge point task
@@ -441,18 +514,12 @@ def calculate_aggressive_durations(
     safety_factor: float = 0.5
 ) -> None:
     """
-    Remove safety padding from individual task estimates and update the tracker.
-    Default: reduce to 50% of original duration (aggressive but achievable).
+    Applies CCPM safety reduction to all tasks and updates the safety tracker.
     """
     for task in tasks.values():
-        if task.original_duration is None:
-            task.original_duration = task.duration
-
-        aggressive_duration = round(task.original_duration * (1 - safety_factor))
-        removed_safety = task.original_duration - aggressive_duration
-
-        task.duration = aggressive_duration
-        safety_tracker.removed_safety[task.id] = removed_safety
+        # This method now lives on the Task object
+        task.apply_ccpm_safety_reduction(safety_factor)
+        safety_tracker.removed_safety[task.id] = task.safety_removed
 
 
 # ------------------------
@@ -485,7 +552,7 @@ def topological_sort(tasks: Dict[str, Task]) -> List[str]:
     return order
 
 
-def detect_cycles(tasks: list) -> None:
+def detect_cycles(tasks: List[Task]) -> None:
     """
     Check for circular dependencies and raise an error if found.
     Also checks for dependencies on missing tasks.
@@ -514,7 +581,12 @@ def detect_cycles(tasks: list) -> None:
         visit(t.id)
 
 
-def diagnose_unschedulable(tasks, resources, project_calendar, forward_map):
+def diagnose_unschedulable(
+    tasks: Dict[str, Task],
+    resources: Dict[str, Resource],
+    project_calendar: ProjectCalendar,
+    forward_map: Dict[str, Tuple[int, int]],
+) -> None:
     """
     Prints detailed reasons why each remaining task can't be scheduled.
     """
@@ -527,18 +599,23 @@ def diagnose_unschedulable(tasks, resources, project_calendar, forward_map):
                 reasons.append(f"predecessor '{pid}' is not scheduled")
             else:
                 pred_end = forward_map[pid][1]
-                if pred_end > task.latest_finish:
+                if task.alap_finish is not None and pred_end > task.alap_finish:
                     reasons.append(
                         f"predecessor '{pid}' finishes at day {pred_end}, "
-                        f"after task's latest finish {task.latest_finish}"
+                        f"after task's latest finish {task.alap_finish}"
                     )
 
         # Resource availability blocking
-        resource = resources[task.resource_id]
-        if not project_calendar.is_resource_available_for_span(
-            resource, task.latest_finish - task.duration + 1, task.latest_finish
-        ):
-            reasons.append(f"resource '{resource.name}' unavailable in latest slot")
+        if task.alap_start is not None and task.alap_finish is not None:
+            for res_id in task.resources:
+                if res_id not in resources:
+                    reasons.append(f"resource '{res_id}' not found")
+                    continue
+                resource = resources[res_id]
+                for day in range(task.alap_start, task.alap_finish + 1):
+                    if not resource.is_available(day, project_calendar):
+                        reasons.append(f"resource '{resource.name}' unavailable on day {day}")
+                        break  # No need to check other days for this resource
 
         if reasons:
             print(f"Task '{tid}' is unschedulable because:")
@@ -546,7 +623,7 @@ def diagnose_unschedulable(tasks, resources, project_calendar, forward_map):
                 print(f"  - {r}")
 
 
-def find_cycles(tasks):
+def find_cycles(tasks: List[Task]) -> List[List[str]]:
     """
     Returns list of cycles, where each cycle is a list of task IDs in order.
     Uses DFS to detect and record cycles.
@@ -624,7 +701,7 @@ def identify_critical_chain(
                 q.append(v)
 
     # 3. Find the end of the longest path and backtrack to reconstruct it
-    end_task_id = max(dist, key=dist.get)
+    end_task_id = max(dist, key=lambda k: dist[k])
     critical_chain = []
     curr = end_task_id
     while curr:
@@ -650,7 +727,7 @@ def build_resource_dependency_graph(tasks: Dict[str, Task]) -> Dict[str, List[st
     return resource_map
 
 
-def detect_circular_dependencies(tasks: dict[str, "Task"]) -> list[list[str]]:
+def detect_circular_dependencies(tasks: Dict[str, "Task"]) -> List[List[str]]:
     """
     Detects circular dependencies in the task graph.
     Returns a list of cycles, where each cycle is a list of task IDs.
@@ -712,7 +789,13 @@ def compute_asap(
         t.asap_start = start
         t.asap_finish = finish
 
-    return {tid: (t.asap_start, t.asap_finish) for tid, t in tasks.items()}
+    asap_schedule: Dict[str, Tuple[int, int]] = {}
+    for tid, t in tasks.items():
+        if t.asap_start is None or t.asap_finish is None:
+            # This should not be reachable due to the logic above
+            raise RuntimeError(f"Task {tid} was not scheduled in ASAP pass.")
+        asap_schedule[tid] = (t.asap_start, t.asap_finish)
+    return asap_schedule
 
 
 # ------------------------
@@ -720,7 +803,7 @@ def compute_asap(
 # ------------------------
 def compute_alap(
     tasks: Dict[str, Task], project_calendar: ProjectCalendar, delivery_day: int
-):
+) -> None:  # type: ignore
     """Compute ALAP start/finish anchored at delivery_day (latest possible ignoring resources)."""
     delivery_day = project_calendar.prev_working_day(delivery_day)
 
@@ -733,7 +816,12 @@ def compute_alap(
             finish = delivery_day
         else:
             # finish = min(start of successors) - 1 (but must be working day)
-            finish = min(tasks[s].alap_start - 1 for s in succs[tid])
+            succ_starts = [tasks[s].alap_start for s in succs[tid] if tasks[s].alap_start is not None]
+            if not succ_starts:
+                # This case should ideally not be reached in a valid graph
+                finish = delivery_day
+            else:
+                finish = min(s - 1 for s in succ_starts)  # type: ignore
             finish = project_calendar.prev_working_day(finish)
 
         # compute start by stepping backwards duration working days
@@ -756,11 +844,7 @@ def resource_constrained_alap(
     Resource-constrained As Late As Possible (ALAP) scheduling.
     Returns dict: task_id -> (start_day, finish_day)
     """
-    # Normalize tasks into a dict
-    if isinstance(tasks, list):
-        task_lookup = {t.id: t for t in tasks}
-    else:
-        task_lookup = tasks
+    task_lookup = tasks
 
     # --- Detect circular dependencies first ---
     visited, rec_stack = set(), set()
@@ -768,8 +852,8 @@ def resource_constrained_alap(
     def dfs(task_id: str) -> bool:
         visited.add(task_id)
         rec_stack.add(task_id)
-        for pred_id in tasks[task_id].predecessors:
-            if pred_id not in tasks:
+        for pred_id in task_lookup[task_id].predecessors:
+            if pred_id not in task_lookup:
                 continue
             if pred_id not in visited and dfs(pred_id):
                 return True
@@ -778,12 +862,12 @@ def resource_constrained_alap(
         rec_stack.remove(task_id)
         return False
 
-    for tid in tasks:
+    for tid in task_lookup:
         if tid not in visited:
             dfs(tid)
 
     # --- Initialize scheduling map ---
-    schedule: Dict[str, Tuple[int, int]] = {tid: (None, None) for tid in tasks}
+    schedule: Dict[str, Tuple[Optional[int], Optional[int]]] = {tid: (None, None) for tid in task_lookup}
 
     # Start with all tasks unscheduled
     unscheduled = set(task_lookup.keys())
@@ -814,11 +898,12 @@ def resource_constrained_alap(
 
             # Determine latest possible finish = min(start of successors) - 1
             if task.successors:
-                min_succ_start = min(
-                    schedule[sid][0]
-                    for sid in task.successors
-                    if schedule[sid][0] is not None
-                )
+                succ_starts = [schedule[sid][0] for sid in task.successors]
+                if not succ_starts or any(s is None for s in succ_starts):
+                    if diagnostic:
+                        print(f"Task {tid} blocked: successors have no start times yet.")
+                    continue
+                min_succ_start = min(s for s in succ_starts if s is not None)
                 latest_finish = min_succ_start - 1
             else:
                 latest_finish = max_day
@@ -878,7 +963,17 @@ def resource_constrained_alap(
             f"No progress in resource constrained ALAP; tasks unscheduled: {unscheduled}"
         )
 
-    return schedule
+    # At this point, all tasks should be scheduled and have non-None start/finish times.
+    # We can safely cast the result to the expected return type.
+    final_schedule: Dict[str, Tuple[int, int]] = {}
+    for tid, times in schedule.items():
+        s, f = times
+        if s is None or f is None:
+            # This should not happen if `unscheduled` is empty.
+            raise RuntimeError(f"Task {tid} was not scheduled but error was not raised.")
+        final_schedule[tid] = (s, f)
+
+    return final_schedule
 
 
 # ------------------------
@@ -1048,7 +1143,7 @@ def analyze_schedule_quality(
     asap_schedule: Dict[str, Tuple[int, int]],
     alap_schedule: Dict[str, Tuple[int, int]],
     resources: Dict[str, Resource],
-) -> Dict[str, any]:
+) -> Dict[str, Any]:
     """
     Provides comprehensive schedule analysis.
     """
@@ -1118,19 +1213,27 @@ def df_to_tasks(df: pd.DataFrame) -> List[Task]:
             p.strip() for p in str(row.get("predecessors", "")).split(",") if p.strip()
         ]
         t = Task(
-            task_id=row["id"],
-            name=row.get("name", row["id"]),
+            task_id=str(row["id"]),
+            name=str(row.get("name", row["id"])),
             duration=int(row["duration"]),
             resources=resources,
             predecessors=preds,
-            description=row.get("description", ""),
+            description=str(row.get("description", "")),
         )
-        t.asap_start = row.get("asap_start")
-        t.asap_finish = row.get("asap_finish")
-        t.alap_start = row.get("alap_start")
-        t.alap_finish = row.get("alap_finish")
-        t.scheduled_start = row.get("scheduled_start")
-        t.scheduled_finish = row.get("scheduled_finish")
+        def to_optional_int(val: Any) -> Optional[int]:
+            if pd.isna(val):
+                return None
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                return None
+
+        t.asap_start = to_optional_int(row.get("asap_start"))
+        t.asap_finish = to_optional_int(row.get("asap_finish"))
+        t.alap_start = to_optional_int(row.get("alap_start"))
+        t.alap_finish = to_optional_int(row.get("alap_finish"))
+        t.scheduled_start = to_optional_int(row.get("scheduled_start"))
+        t.scheduled_finish = to_optional_int(row.get("scheduled_finish"))
         tasks.append(t)
     return tasks
 

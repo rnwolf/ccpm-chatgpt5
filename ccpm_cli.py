@@ -14,8 +14,8 @@ from datetime import datetime
 
 # Import our CCPM modules
 from ccpm_module import (
-    Task, Resource, ProjectCalendar, 
-    schedule_tasks, CCPMScheduleResult,
+    Task, Resource, ProjectCalendar,
+    schedule_with_ccpm, CCPMScheduleResult,
     ProjectExecutionTracker, FeverChartGenerator
 )
 
@@ -387,36 +387,29 @@ def create_ccmp_schedule(
     delivery_date: Optional[int],
     verbose: bool
 ) -> 'CCPMScheduleResult':
-    """Create CCPM schedule with buffers"""
+    """Create CCPM schedule with buffers using the full pipeline."""
     
-    # Apply safety reduction to tasks
-    for task in tasks:
-        task.apply_ccmp_safety_reduction(safety_factor)
-    
-    # Schedule tasks
+    tasks_dict = {t.id: t for t in tasks}
     resources_dict = {r.id: r for r in resources}
-    schedule_map = schedule_tasks(
-        tasks=tasks,
+
+    if verbose:
+        click.echo("Running full CCPM scheduling pipeline...")
+
+    # Use the full CCPM pipeline from the module
+    schedule_result = schedule_with_ccpm(
+        tasks=tasks_dict,
         resources=resources_dict,
         project_calendar=calendar,
-        max_day=365,
-        diagnostic=verbose
+        max_day=delivery_date or 365, # Use delivery_date as max_day
+        safety_factor=safety_factor,
+        buffer_factor=buffer_factor
     )
     
-    # TODO: Implement full CCPM with buffers
-    # This is where Phase 3 implementation would go
-    
-    # For now, return basic schedule result
-    result = CCPMScheduleResult(
-        tasks={t.id: t for t in tasks},
-        critical_chain=[],  # TODO: Implement critical chain detection
-        project_buffer=None,  # TODO: Implement buffer creation
-        feeding_buffers={},   # TODO: Implement feeding buffers
-        safety_removed={t.id: t.safety_removed for t in tasks},
-        schedule_statistics={}
-    )
-    
-    return result
+    if verbose:
+        click.echo("CCPM Schedule created successfully.")
+        # Optionally print some stats from schedule_result.schedule_statistics
+
+    return schedule_result
 
 def save_schedule(schedule: 'CCPMScheduleResult', file_path: str) -> None:
     """Save schedule to JSON file"""
