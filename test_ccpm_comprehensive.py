@@ -10,7 +10,9 @@ from ccpm_module import (
     calculate_project_buffer,
     calculate_feeding_buffers,
     detect_feeding_chains,
+    schedule_with_ccpm,
 )
+from ccpm_execution_tracker import ProjectExecutionTracker, ProgressUpdate
 
 def test_original_duration_preservation():
     """Test that original durations are preserved for replanning and that related fields are updated correctly."""
@@ -186,3 +188,64 @@ def test_complex_feeding_chain_detection():
     assert set(feeding_chains["C"]) == {"G1"}, "Should find all tasks in the chain feeding C"
 
     assert "A" not in feeding_chains, "Critical chain tasks should not be merge points of feeding chains into themselves"
+
+
+def test_execution_tracking_and_buffer_consumption():
+    """
+    Tests the full execution tracking loop, including progress updates
+    and buffer consumption calculation.
+    """
+    # 1. Setup a scheduled project
+    calendar = ProjectCalendar()
+    resources = {"R1": Resource("R1", "Worker")}
+    tasks = {
+        "A": Task("A", "Critical Task 1", 10, resources=["R1"]),
+        "B": Task("B", "Critical Task 2", 10, resources=["R1"], predecessors=["A"]),
+    }
+
+    # schedule_with_ccpm will handle successor computation
+    schedule_result = schedule_with_ccpm(tasks, resources, calendar, max_day=100)
+
+    # Initial state checks
+    assert schedule_result.critical_chain == ["A", "B"]
+    assert schedule_result.project_buffer is not None
+    assert schedule_result.project_buffer.duration > 0
+
+    # 2. Create a tracker
+    tracker = ProjectExecutionTracker(schedule_result)
+
+    # 3. Simulate a progress update for Task A with a delay
+    # Aggressive duration for A is 10 * 0.5 = 5 days.
+    # Its scheduled finish would be around day 4 (if start is 0).
+    # Let's say it actually finishes on day 11 (duration of 12 days).
+    task_a_scheduled_finish = schedule_result.tasks["A"].scheduled_finish
+    assert task_a_scheduled_finish is not None
+
+    update = ProgressUpdate(
+        task_id="A",
+        status=TaskStatus.COMPLETED,
+        actual_start=0,
+        actual_finish=11
+    )
+    tracker.update_task_progress(update)
+
+    # Verify task A's status is updated
+    assert tasks["A"].execution_status == TaskStatus.COMPLETED
+    assert tasks["A"].actual_finish == 11
+
+    # 4. Check buffer consumption
+    delay = tasks["A"].calculate_delay()
+    assert delay == 7 # (11 - 0 + 1) - 5 = 7
+
+    statuses = tracker.get_buffer_statuses(current_date=12)
+    project_buffer_status = statuses.get("Project Buffer")
+    assert project_buffer_status is not None
+
+    # Project buffer size is round((5+5)*0.5) = 5
+    project_buffer_size = schedule_result.project_buffer.duration
+    assert project_buffer_size == 5
+
+    # Expected consumption is (7 / 5) * 100 = 140, which is capped at 100.
+    expected_consumption = 100.0
+
+    assert abs(project_buffer_status["actual_consumption"] - expected_consumption) < 0.1

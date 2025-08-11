@@ -193,10 +193,14 @@ class Task:
             self.actual_finish = actual_finish
 
     def calculate_delay(self) -> int:
-        """Calculates delay based on scheduled vs. actual finish."""
-        if self.actual_finish is not None and self.scheduled_finish is not None:
-            delay = self.actual_finish - self.scheduled_finish
-            # Consider only delays, not early finishes
+        """
+        Calculates the delay of a task, defined as the difference between
+        its actual duration and its planned (aggressive) duration.
+        """
+        if self.actual_start is not None and self.actual_finish is not None:
+            # Assuming duration is in days, a task from day 0 to 0 has duration 1.
+            actual_duration = self.actual_finish - self.actual_start + 1
+            delay = actual_duration - self.duration
             return max(0, delay)
         return 0
 

@@ -16,9 +16,9 @@ from datetime import datetime
 from ccpm_module import (
     Task, Resource, ProjectCalendar, TaskStatus,
     schedule_with_ccpm, CCPMScheduleResult,
-    # ProjectExecutionTracker, # Not implemented yet
 )
 from fever_chart_system import FeverChartGenerator
+from ccpm_execution_tracker import ProjectExecutionTracker, ProgressUpdate
 
 # Helper functions
 
@@ -59,9 +59,24 @@ def generate_gantt_chart(schedule: 'CCPMScheduleResult', file_path: str) -> None
     """Placeholder for Gantt chart generation."""
     raise NotImplementedError("Gantt chart generation is not yet implemented.")
 
-def load_progress_updates(file_path: str) -> List[Any]:
-    """Placeholder for loading progress updates."""
-    raise NotImplementedError("Progress update loading is not yet implemented.")
+def load_progress_updates(file_path: str) -> List[ProgressUpdate]:
+    """Loads progress updates from a CSV file."""
+    df = pd.read_csv(file_path)
+    updates = []
+    for _, row in df.iterrows():
+        # Convert status string to TaskStatus enum
+        status_str = row.get('status')
+        status = TaskStatus[status_str.upper().replace(" ", "_")] if status_str else TaskStatus.NOT_STARTED
+
+        update = ProgressUpdate(
+            task_id=row['task_id'],
+            status=status,
+            actual_start=pd.to_numeric(row.get('actual_start'), errors='coerce'),
+            actual_finish=pd.to_numeric(row.get('actual_finish'), errors='coerce'),
+            percent_complete=pd.to_numeric(row.get('percent_complete'), errors='coerce')
+        )
+        updates.append(update)
+    return updates
 
 def display_replan_summary(original_schedule: 'CCPMScheduleResult', new_schedule: 'CCPMScheduleResult', task_ids: List[str]) -> None:
     """Placeholder for displaying replan summary."""
@@ -215,14 +230,31 @@ def display_schedule_summary(schedule: 'CCPMScheduleResult') -> None:
     total_safety = sum(schedule.safety_tracker.removed_safety.values())
     click.echo(f"Total Safety Removed: {total_safety} days")
 
-# def display_buffer_status(tracker: 'ProjectExecutionTracker', current_date: int) -> None:
-#     """Display current buffer status"""
-#     click.echo("\n" + "="*60)
-#     click.echo("BUFFER STATUS")
-#     click.echo("="*60)
+def display_buffer_status(tracker: ProjectExecutionTracker, current_date: int) -> None:
+    """Displays the current status of all project buffers."""
+    click.echo("\n" + "="*60)
+    click.echo(f"BUFFER STATUS as of Day {current_date}")
+    click.echo("="*60)
 
-#     # TODO: Implement buffer status display
-#     click.echo("Buffer monitoring not yet implemented")
+    statuses = tracker.get_buffer_statuses(current_date)
+
+    if not statuses:
+        click.echo("No buffers to display.")
+        return
+
+    for name, status in statuses.items():
+        click.echo(f"\n--- {name} ({status['type']}) ---")
+        click.echo(f"  Size: {status['size']} days")
+        click.echo(f"  Planned Consumption: {status['planned_consumption']:.1f}%")
+        click.echo(f"  Actual Consumption:  {status['actual_consumption']:.1f}%")
+
+        # Add a simple status indicator
+        if status['actual_consumption'] > 100:
+            click.secho("  Status: CRITICAL (Overconsumed)", fg='red', bold=True)
+        elif status['actual_consumption'] > status['planned_consumption'] + 20:
+            click.secho("  Status: WARNING (Significantly behind plan)", fg='yellow')
+        else:
+            click.secho("  Status: ON TRACK", fg='green')
 
 def display_critical_chain_report(schedule: 'CCPMScheduleResult') -> None:
     """Display critical chain analysis"""
@@ -310,67 +342,67 @@ def schedule(project_file: str, safety_factor: float, buffer_factor: float,
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-# @cli.command()
-# @click.argument('schedule_file', type=click.Path(exists=True))
-# @click.argument('progress_file', type=click.Path(exists=True))
-# @click.option('--current-date', '-d', type=int, required=True,
-#               help='Current project date')
-# @click.option('--output', '-o', type=click.Path(),
-#               help='Output file for updated schedule')
-# @click.option('--fever-chart', type=click.Path(),
-#               help='Generate fever chart (HTML format)')
-# @click.option('--verbose', '-v', is_flag=True)
-# def update(schedule_file: str, progress_file: str, current_date: int,
-#            output: Optional[str], fever_chart: Optional[str], verbose: bool):
-#     """
-#     Update schedule with actual progress data.
+@cli.command()
+@click.argument('schedule_file', type=click.Path(exists=True))
+@click.argument('progress_file', type=click.Path(exists=True))
+@click.option('--current-date', '-d', type=int, required=True,
+              help='Current project date')
+@click.option('--output', '-o', type=click.Path(),
+              help='Output file for updated schedule')
+@click.option('--fever-chart', type=click.Path(),
+              help='Generate fever chart (HTML format)')
+@click.option('--verbose', '-v', is_flag=True)
+def update(schedule_file: str, progress_file: str, current_date: int,
+           output: Optional[str], fever_chart: Optional[str], verbose: bool):
+    """
+    Update schedule with actual progress data.
     
-#     SCHEDULE_FILE: Previously created CCPM schedule (JSON)
-#     PROGRESS_FILE: Progress updates (CSV format)
-#     """
-#     try:
-#         # Load schedule and progress data
-#         click.echo(f"Loading schedule from {schedule_file}...")
-#         schedule_result = load_schedule(schedule_file)
+    SCHEDULE_FILE: Previously created CCPM schedule (JSON)
+    PROGRESS_FILE: Progress updates (CSV format)
+    """
+    try:
+        # Load schedule and progress data
+        click.echo(f"Loading schedule from {schedule_file}...")
+        schedule_result = load_schedule(schedule_file)
 
-#         click.echo(f"Loading progress from {progress_file}...")
-#         progress_updates = load_progress_updates(progress_file)
+        click.echo(f"Loading progress from {progress_file}...")
+        progress_updates = load_progress_updates(progress_file)
 
-#         if verbose:
-#             click.echo(f"Processing {len(progress_updates)} progress updates")
+        if verbose:
+            click.echo(f"Processing {len(progress_updates)} progress updates")
 
-#         # Update schedule
-#         click.echo("Updating schedule with progress...")
-#         tracker = ProjectExecutionTracker(schedule_result)
+        # Update schedule
+        click.echo("Updating schedule with progress...")
+        tracker = ProjectExecutionTracker(schedule_result)
 
-#         for update in progress_updates:
-#             tracker.update_task_progress(update)
+        for p_update in progress_updates:
+            tracker.update_task_progress(p_update)
 
-#         # Generate fever chart if requested
-#         if fever_chart:
-#             click.echo("Generating fever chart...")
-#             generator = FeverChartGenerator(schedule_result)
-#             chart_data = generator.generate_chart_data(
-#                 start_date=0,
-#                 end_date=current_date,
-#                 progress_updates={t.id: t for t in schedule_result.tasks.values()}
-#             )
+        # Generate fever chart if requested
+        if fever_chart:
+            click.echo("Generating fever chart...")
+            generator = FeverChartGenerator(schedule_result)
+            chart_data = generator.generate_chart_data(
+                start_date=0,
+                end_date=current_date,
+                progress_updates={t.id: t for t in schedule_result.tasks.values()}
+            )
             
-#             html_chart = generator.generate_html_chart(chart_data)
-#             Path(fever_chart).write_text(html_chart)
-#             click.echo(f"Fever chart saved to {fever_chart}")
+            html_chart = generator.generate_html_chart(chart_data)
+            Path(fever_chart).write_text(html_chart)
+            click.echo(f"Fever chart saved to {fever_chart}")
         
-#         # Save updated schedule
-#         if output:
-#             save_schedule(schedule_result, output)
-#             click.echo(f"Updated schedule saved to {output}")
+        # Save updated schedule
+        if output:
+            save_schedule(schedule_result, output)
+            click.echo(f"Updated schedule saved to {output}")
         
-#         # Display buffer status
-#         display_buffer_status(tracker, current_date)
+        # Display buffer status
+        display_buffer_status(tracker, current_date)
         
-#     except Exception as e:
-#         click.echo(f"Error: {e}", err=True)
-#         sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
 # @cli.command()
 # @click.argument('schedule_file', type=click.Path(exists=True))
