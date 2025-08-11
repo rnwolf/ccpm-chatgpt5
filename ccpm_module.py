@@ -386,6 +386,84 @@ def find_cycles(tasks):
     return cycles
 
 
+def identify_critical_chain(
+    tasks: Dict[str, Task],
+    schedule: Dict[str, Tuple[int, int]],
+) -> List[str]:
+    """
+    Identifies the critical chain considering both task and resource dependencies.
+    The resource dependencies are inferred from the provided schedule.
+    """
+    # 1. Build a combined dependency graph (predecessors + resources)
+    adj: Dict[str, List[str]] = {tid: [] for tid in tasks}
+    in_degree: Dict[str, int] = {tid: 0 for tid in tasks}
+
+    # Add predecessor dependencies
+    for tid, task in tasks.items():
+        for pred_id in task.predecessors:
+            adj[pred_id].append(tid)
+            in_degree[tid] += 1
+
+    # Add resource dependencies from the schedule
+    resource_map = build_resource_dependency_graph(tasks)
+    for res_id, task_ids in resource_map.items():
+        if len(task_ids) <= 1:
+            continue
+        # Sort tasks using this resource by their scheduled start time
+        sorted_tasks = sorted(task_ids, key=lambda tid: schedule[tid][0])
+        for i in range(len(sorted_tasks) - 1):
+            u, v = sorted_tasks[i], sorted_tasks[i+1]
+            # Add a resource dependency edge
+            adj[u].append(v)
+            in_degree[v] += 1
+
+    # 2. Find the longest path in the combined graph (using task durations as weights)
+    q = [tid for tid, deg in in_degree.items() if deg == 0]
+    dist: Dict[str, int] = {tid: 0 for tid in tasks}
+    path_pred: Dict[str, Optional[str]] = {tid: None for tid in tasks}
+
+    for tid in q:
+        dist[tid] = tasks[tid].duration
+
+    while q:
+        u = q.pop(0)
+        for v in adj[u]:
+            new_dist = dist[u] + tasks[v].duration
+            if new_dist > dist[v]:
+                dist[v] = new_dist
+                path_pred[v] = u
+
+            in_degree[v] -= 1
+            if in_degree[v] == 0:
+                q.append(v)
+
+    # 3. Find the end of the longest path and backtrack to reconstruct it
+    end_task_id = max(dist, key=dist.get)
+    critical_chain = []
+    curr = end_task_id
+    while curr:
+        critical_chain.append(curr)
+        tasks[curr].on_critical_chain = True
+        curr = path_pred[curr]
+
+    critical_chain.reverse()
+    return critical_chain
+
+
+def build_resource_dependency_graph(tasks: Dict[str, Task]) -> Dict[str, List[str]]:
+    """
+    Groups tasks by the resources they require.
+    Returns a dictionary where keys are resource IDs and values are lists of task IDs.
+    """
+    resource_map: Dict[str, List[str]] = {}
+    for task_id, task in tasks.items():
+        for resource_id in task.resources:
+            if resource_id not in resource_map:
+                resource_map[resource_id] = []
+            resource_map[resource_id].append(task_id)
+    return resource_map
+
+
 def detect_circular_dependencies(tasks: dict[str, "Task"]) -> list[list[str]]:
     """
     Detects circular dependencies in the task graph.
@@ -648,42 +726,25 @@ def schedule_tasks(
 
     # --- Forward pass (ASAP) ---
     asap_schedule: Dict[str, Tuple[int, int]] = {}
-    unscheduled = set(task_lookup.keys())
-    iteration = 0
-    progress = True
+    order = topological_sort(task_lookup)
 
-    while unscheduled and progress and iteration < max_iters:
-        iteration += 1
-        progress = False
+    for tid in order:
+        task = task_lookup[tid]
 
-        for tid in list(unscheduled):
-            task = task_lookup[tid]
+        # Earliest start = max of predecessors' finish days + 1
+        earliest_start = 0
+        if task.predecessors:
+            # Predecessors are guaranteed to be in asap_schedule due to topological sort
+            earliest_start = max(asap_schedule[p][1] for p in task.predecessors) + 1
 
-            # Predecessors must be scheduled first
-            if not all(t in asap_schedule for t in task.predecessors):
-                if diagnostic:
-                    missing = [p for p in task.predecessors if p not in asap_schedule]
-                    print(f"ASAP: Task {tid} blocked by predecessors {missing}")
-                continue
+        # Schedule ASAP (no resource check for this pass)
+        start_day = project_calendar.next_working_day(earliest_start)
+        finish_day = project_calendar.add_working_days(start_day, task.duration) - 1
 
-            # Earliest start = max of predecessors' finish days + 1
-            earliest_start = 0
-            if task.predecessors:
-                earliest_start = max(asap_schedule[p][1] for p in task.predecessors) + 1
+        asap_schedule[tid] = (start_day, finish_day)
 
-            # Schedule ASAP (no resource check for this pass)
-            start_day = project_calendar.next_working_day(earliest_start)
-            finish_day = project_calendar.add_working_days(start_day, task.duration) - 1
-
-            asap_schedule[tid] = (start_day, finish_day)
-            unscheduled.remove(tid)
-            progress = True
-
-            if diagnostic:
-                print(f"ASAP: Scheduled Task {tid} {start_day}-{finish_day}")
-
-    if unscheduled:
-        raise RuntimeError(f"ASAP scheduling stuck; unscheduled tasks: {unscheduled}")
+        if diagnostic:
+            print(f"ASAP: Scheduled Task {tid} {start_day}-{finish_day}")
 
     # --- Backward pass with resources (ALAP) ---
     if diagnostic:
@@ -723,6 +784,49 @@ def schedule_tasks(
 # ------------------------
 # DataFrame helpers (your existing helpers kept)
 # ------------------------
+def analyze_schedule_quality(
+    tasks: Dict[str, Task],
+    asap_schedule: Dict[str, Tuple[int, int]],
+    alap_schedule: Dict[str, Tuple[int, int]],
+    resources: Dict[str, Resource],
+) -> Dict[str, any]:
+    """
+    Provides comprehensive schedule analysis.
+    """
+    # Slack Analysis
+    slacks = {
+        tid: alap_schedule[tid][0] - asap_schedule[tid][0] for tid in tasks
+    }
+    avg_slack = sum(slacks.values()) / len(slacks) if slacks else 0
+
+    # Resource Utilization
+    resource_allocations: Dict[str, Dict[int, int]] = {res_id: {} for res_id in resources}
+    max_day = 0
+    for tid, (start, end) in alap_schedule.items():
+        task = tasks[tid]
+        if end > max_day:
+            max_day = end
+        for res_id in task.resources:
+            for day in range(start, end + 1):
+                allocations = resource_allocations.setdefault(res_id, {})
+                allocations[day] = allocations.get(day, 0) + 1 # Assuming 1 unit per task
+
+    total_capacity = 0
+    total_allocated = 0
+    for res_id, res in resources.items():
+        total_capacity += res.capacity_per_day * (max_day + 1)
+        total_allocated += sum(resource_allocations.get(res_id, {}).values())
+
+    avg_utilization = (total_allocated / total_capacity) * 100 if total_capacity > 0 else 0
+
+    return {
+        "average_slack": avg_slack,
+        "slack_distribution": slacks,
+        "average_resource_utilization_percent": avg_utilization,
+        "project_finish_day": max_day,
+    }
+
+
 def tasks_to_df(tasks: List[Task]) -> pd.DataFrame:
     rows = []
     for t in tasks:
