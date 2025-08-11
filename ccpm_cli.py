@@ -63,17 +63,33 @@ def load_progress_updates(file_path: str) -> List[ProgressUpdate]:
     """Loads progress updates from a CSV file."""
     df = pd.read_csv(file_path)
     updates = []
+
+    def to_optional_int(val: Any) -> Optional[int]:
+        if pd.isna(val):
+            return None
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            return None
+
+    def to_optional_float(val: Any) -> Optional[float]:
+        if pd.isna(val):
+            return None
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return None
+
     for _, row in df.iterrows():
-        # Convert status string to TaskStatus enum
         status_str = row.get('status')
-        status = TaskStatus[status_str.upper().replace(" ", "_")] if status_str else TaskStatus.NOT_STARTED
+        status = TaskStatus[status_str.upper().replace(" ", "_")] if status_str and isinstance(status_str, str) else TaskStatus.NOT_STARTED
 
         update = ProgressUpdate(
-            task_id=row['task_id'],
+            task_id=str(row['task_id']),
             status=status,
-            actual_start=pd.to_numeric(row.get('actual_start'), errors='coerce'),
-            actual_finish=pd.to_numeric(row.get('actual_finish'), errors='coerce'),
-            percent_complete=pd.to_numeric(row.get('percent_complete'), errors='coerce')
+            actual_start=to_optional_int(row.get('actual_start')),
+            actual_finish=to_optional_int(row.get('actual_finish')),
+            percent_complete=to_optional_float(row.get('percent_complete'))
         )
         updates.append(update)
     return updates
