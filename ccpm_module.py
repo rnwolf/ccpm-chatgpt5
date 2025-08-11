@@ -285,6 +285,7 @@ class Buffer(Task):
             description=description,
         )
         self.linked_task = linked_task
+        self.buffer_type = "generic"
 
     def to_dict(self) -> Dict[str, Any]:
         d = super().to_dict()
@@ -318,6 +319,7 @@ class ProjectBuffer(Buffer):
             buffer_id, name, duration, linked_task=None, description=description
         )
         self.delivery_date = delivery_date
+        self.buffer_type = "project"
 
     def to_dict(self) -> Dict[str, Any]:
         d = super().to_dict()
@@ -339,7 +341,29 @@ class ProjectBuffer(Buffer):
 
 
 class FeedingBuffer(Buffer):
-    pass
+    def __init__(
+        self,
+        buffer_id: str,
+        name: str,
+        duration: int,
+        linked_task: Optional[str] = None,
+        description: str = "",
+    ):
+        super().__init__(buffer_id, name, duration, linked_task, description)
+        self.buffer_type = "feeding"
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "FeedingBuffer":
+        buf = cls(
+            buffer_id=data["id"],
+            name=data.get("name", data["id"]),
+            duration=int(data["duration"]),
+            linked_task=data.get("linked_task"),
+            description=data.get("description", ""),
+        )
+        buf.scheduled_start = data.get("scheduled_start")
+        buf.scheduled_finish = data.get("scheduled_finish")
+        return buf
 
 
 class SafetyTracker:
