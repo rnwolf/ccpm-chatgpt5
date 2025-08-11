@@ -3,6 +3,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import json
 import pandas as pd
+from ccpm_module import (
+    CCPMScheduleResult,
+    Task,
+    Buffer,
+    ProjectBuffer,
+    FeedingBuffer,
+)
 
 @dataclass
 class FeverChartPoint:
@@ -126,10 +133,11 @@ class BufferConsumptionCalculator:
         if not buffer:
             return 0.0
             
-        if buffer.buffer_type == "project":
+        if isinstance(buffer, ProjectBuffer):
             return self._calculate_project_buffer_planned_consumption(buffer, date)
-        else:
+        elif isinstance(buffer, FeedingBuffer):
             return self._calculate_feeding_buffer_planned_consumption(buffer, date)
+        return 0.0
     
     def calculate_actual_consumption(
         self, 
@@ -144,10 +152,11 @@ class BufferConsumptionCalculator:
         if not buffer:
             return 0.0
             
-        if buffer.buffer_type == "project":
+        if isinstance(buffer, ProjectBuffer):
             return self._calculate_project_buffer_actual_consumption(buffer, date, progress_data)
-        else:
+        elif isinstance(buffer, FeedingBuffer):
             return self._calculate_feeding_buffer_actual_consumption(buffer, date, progress_data)
+        return 0.0
     
     def _calculate_project_buffer_planned_consumption(
         self, 
@@ -168,9 +177,9 @@ class BufferConsumptionCalculator:
         planned_completion_by_date = 0
         
         for task in critical_chain_tasks:
-            if task.scheduled_finish and task.scheduled_finish <= date:
+            if task.scheduled_finish is not None and task.scheduled_finish <= date:
                 planned_completion_by_date += task.duration
-            elif task.scheduled_start and task.scheduled_start <= date < task.scheduled_finish:
+            elif task.scheduled_start is not None and task.scheduled_finish is not None and task.scheduled_start <= date < task.scheduled_finish:
                 # Partially complete
                 days_elapsed = date - task.scheduled_start + 1
                 planned_completion_by_date += min(days_elapsed, task.duration)
@@ -217,9 +226,9 @@ class BufferConsumptionCalculator:
         planned_completion_by_date = 0
         
         for task in feeding_tasks:
-            if task.scheduled_finish and task.scheduled_finish <= date:
+            if task.scheduled_finish is not None and task.scheduled_finish <= date:
                 planned_completion_by_date += task.duration
-            elif task.scheduled_start and task.scheduled_start <= date < task.scheduled_finish:
+            elif task.scheduled_start is not None and task.scheduled_finish is not None and task.scheduled_start <= date < task.scheduled_finish:
                 days_elapsed = date - task.scheduled_start + 1
                 planned_completion_by_date += min(days_elapsed, task.duration)
         
@@ -245,22 +254,43 @@ class BufferConsumptionCalculator:
         consumption_percentage = (total_delay / buffer.duration) * 100 if buffer.duration > 0 else 0
         return min(100, consumption_percentage)
     
-    def _get_buffer(self, buffer_id: str) -> Optional['Buffer']:
-        """Get buffer by ID from schedule"""
-        # Implementation depends on how buffers are stored in CCPMScheduleResult
-        pass
+    def _get_buffer(self, buffer_id: str) -> Optional[Buffer]:
+        """Get buffer by ID from the schedule."""
+        if self.schedule.project_buffer and self.schedule.project_buffer.id == buffer_id:
+            return self.schedule.project_buffer
+        return self.schedule.feeding_buffers.get(buffer_id)
     
-    def _get_feeding_tasks(self, buffer: 'FeedingBuffer') -> List['Task']:
-        """Get tasks that feed into this buffer"""
-        # Implementation depends on buffer-task relationships
-        pass
+    def _get_feeding_tasks(self, buffer: FeedingBuffer) -> List[Task]:
+        """
+        Get tasks that feed into this buffer by traversing backwards from the
+        buffer's predecessors.
+        """
+        feeding_tasks: List[Task] = []
+        queue = list(buffer.predecessors)
+        visited = set(buffer.predecessors)
+
+        while queue:
+            task_id = queue.pop(0)
+            task = self.schedule.tasks.get(task_id)
+
+            if task and not task.on_critical_chain:
+                # Add the task to our list of feeding tasks
+                feeding_tasks.append(task)
+
+                # Add its predecessors to the queue to continue traversal
+                for pred_id in task.predecessors:
+                    if pred_id not in visited:
+                        visited.add(pred_id)
+                        queue.append(pred_id)
+
+        return feeding_tasks
 
 class FeverChartGenerator:
     """Generate CCPM fever charts for buffer monitoring"""
     
-    def __init__(self, ccpm_schedule: 'CCPMScheduleResult'):
-        self.schedule = ccmp_schedule
-        self.calculator = BufferConsumptionCalculator(ccmp_schedule)
+    def __init__(self, ccpm_schedule: CCPMScheduleResult):
+        self.schedule = ccpm_schedule
+        self.calculator = BufferConsumptionCalculator(ccpm_schedule)
         
     def generate_chart_data(
         self, 
@@ -343,13 +373,12 @@ class FeverChartGenerator:
         else:
             return "stable"
     
-    def _get_all_buffers(self) -> Dict[str, 'Buffer']:
-        """Get all buffers from schedule"""
-        # Implementation depends on CCPMScheduleResult structure
-        buffers = {}
-        if hasattr(self.schedule, 'project_buffer'):
+    def _get_all_buffers(self) -> Dict[str, Buffer]:
+        """Get all buffers from the schedule."""
+        buffers: Dict[str, Buffer] = {}
+        if self.schedule.project_buffer:
             buffers[self.schedule.project_buffer.id] = self.schedule.project_buffer
-        if hasattr(self.schedule, 'feeding_buffers'):
+        if self.schedule.feeding_buffers:
             buffers.update(self.schedule.feeding_buffers)
         return buffers
     
