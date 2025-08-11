@@ -19,6 +19,7 @@ from ccpm_module import (
 )
 from fever_chart_system import FeverChartGenerator
 from ccpm_execution_tracker import ProjectExecutionTracker, ProgressUpdate
+from ccpm_sample_data import get_sample_tasks, get_sample_resources, get_sample_calendar
 
 # Helper functions
 
@@ -295,6 +296,89 @@ def cli():
     Critical Chain Project Management scheduling and execution tracking.
     """
     pass
+
+@click.group()
+def template():
+    """
+    Generate template files for project data.
+    """
+    pass
+
+cli.add_command(template)
+
+@template.command()
+@click.option('--output', '-o', default='project_template.csv', help='Output file name.')
+def csv(output):
+    """Generate a sample project file in CSV format."""
+    tasks = get_sample_tasks()
+
+    # Convert tasks to a list of dictionaries for DataFrame creation
+    task_data = []
+    for task in tasks:
+        task_data.append({
+            'id': task.id,
+            'name': task.name,
+            'duration': task.duration,
+            'predecessors': ",".join(task.predecessors),
+            'resources': ",".join(task.resources),
+            'description': task.description,
+        })
+
+    df = pd.DataFrame(task_data)
+    df.to_csv(output, index=False)
+    click.echo(f"Sample project file created: {output}")
+
+@template.command(name='json')
+@click.option('--output', '-o', default='project_template.json', help='Output file name.')
+def json_template(output):
+    """Generate a sample project file in JSON format."""
+    tasks = get_sample_tasks()
+    resources = get_sample_resources()
+    calendar = get_sample_calendar()
+
+    data = {
+        "tasks": [task.to_dict() for task in tasks],
+        "resources": [resource.to_dict() for resource in resources],
+        "calendar": calendar.to_dict(),
+    }
+
+    with open(output, 'w') as f:
+        json.dump(data, f, indent=2)
+    click.echo(f"Sample project file created: {output}")
+
+@template.command()
+@click.option('--output', '-o', default='project_template.xlsx', help='Output file name.')
+def excel(output):
+    """Generate a sample project file in Excel format."""
+    tasks = get_sample_tasks()
+    resources = get_sample_resources()
+
+    task_data = []
+    for task in tasks:
+        task_data.append({
+            'id': task.id,
+            'name': task.name,
+            'duration': task.duration,
+            'predecessors': ",".join(task.predecessors),
+            'resources': ",".join(task.resources),
+            'description': task.description,
+        })
+    tasks_df = pd.DataFrame(task_data)
+
+    resource_data = []
+    for resource in resources:
+        resource_data.append({
+            'id': resource.id,
+            'name': resource.name,
+            'capacity_per_day': resource.capacity_per_day,
+        })
+    resources_df = pd.DataFrame(resource_data)
+
+    with pd.ExcelWriter(output) as writer:
+        tasks_df.to_excel(writer, sheet_name='Tasks', index=False)
+        resources_df.to_excel(writer, sheet_name='Resources', index=False)
+
+    click.echo(f"Sample project file created: {output}")
 
 @cli.command()
 @click.argument('project_file', type=click.Path(exists=True))
