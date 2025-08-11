@@ -7,6 +7,17 @@ from ccpm_module import (
     build_resource_dependency_graph,
     identify_critical_chain,
     analyze_schedule_quality,
+    SafetyTracker,
+    calculate_aggressive_durations,
+    calculate_project_buffer,
+    insert_project_buffer,
+    ProjectBuffer,
+    detect_feeding_chains,
+    calculate_feeding_buffers,
+    FeedingBuffer,
+    integrate_buffers_into_schedule,
+    schedule_with_ccpm,
+    CCPMScheduleResult,
 )
 
 def test_project_calendar_initialization():
@@ -275,6 +286,168 @@ def test_analyze_schedule_quality():
 
     # For this simple linear project, slack should be non-zero.
     assert analysis["average_slack"] > 0
+
+
+# --- Phase 3 Tests ---
+
+def test_calculate_aggressive_durations():
+    """Tests the reduction of task durations and safety tracking."""
+    tasks_map = {
+        "A": Task("A", "Task A", 10),
+        "B": Task("B", "Task B", 20),
+    }
+    tracker = SafetyTracker()
+    calculate_aggressive_durations(tasks_map, tracker, safety_factor=0.5)
+
+    assert tasks_map["A"].duration == 5
+    assert tasks_map["A"].original_duration == 10
+    assert tracker.removed_safety["A"] == 5
+
+    assert tasks_map["B"].duration == 10
+    assert tasks_map["B"].original_duration == 20
+    assert tracker.removed_safety["B"] == 10
+
+def test_safety_tracker_chain_safety():
+    """Tests the summation of safety for a chain of tasks."""
+    tracker = SafetyTracker()
+    tracker.removed_safety = {"A": 5, "B": 10, "C": 8}
+
+    chain = ["A", "B"]
+    assert tracker.calculate_chain_safety(chain) == 15
+
+    chain2 = ["A", "C"]
+    assert tracker.calculate_chain_safety(chain2) == 13
+
+
+def test_calculate_project_buffer():
+    """Tests the calculation of the project buffer size."""
+    tracker = SafetyTracker()
+    tracker.removed_safety = {"A": 5, "B": 10, "C": 8}
+    critical_chain = ["A", "C"]
+
+    buffer_size = calculate_project_buffer(critical_chain, tracker, buffer_factor=0.5)
+    assert buffer_size == round((5 + 8) * 0.5) # 6.5 -> 7
+
+    buffer_size_custom_factor = calculate_project_buffer(critical_chain, tracker, buffer_factor=0.75)
+    assert buffer_size_custom_factor == round((5 + 8) * 0.75) # 9.75 -> 10
+
+
+def test_insert_project_buffer():
+    """Tests the creation of the project buffer object."""
+    tasks_map = {} # Not used by the refactored function
+    critical_chain = ["A", "B"]
+    buffer_size = 15
+
+    buffer = insert_project_buffer(tasks_map, critical_chain, buffer_size)
+
+    assert isinstance(buffer, ProjectBuffer)
+    assert buffer.duration == 15
+    assert buffer.id == "ProjectBuffer"
+
+
+def test_integrate_buffers_into_schedule():
+    """Tests the wiring of buffers into the task graph."""
+    tasks_map = {
+        "A": Task("A", "A", 1, predecessors=[]),
+        "B": Task("B", "B", 1, predecessors=["A"]), # Part of feeding chain
+        "C": Task("C", "C", 1, predecessors=[]), # Critical chain
+    }
+    tasks_map["A"].successors = ["B"]
+    tasks_map["B"].successors = ["C"]
+    tasks_map["C"].predecessors = ["B"]
+    tasks_map["C"].on_critical_chain = True
+
+    project_buffer = ProjectBuffer("PB", "Project Buffer", 5)
+    feeding_buffers = {
+        "FB-C": FeedingBuffer("FB-C", "Feeding Buffer for C", 3, linked_task="C")
+    }
+
+    integrate_buffers_into_schedule(tasks_map, project_buffer, feeding_buffers)
+
+    # Check feeding buffer integration
+    assert tasks_map["B"].successors == ["FB-C"]
+    assert tasks_map["FB-C"].predecessors == ["B"]
+    assert tasks_map["FB-C"].successors == ["C"]
+    assert "B" not in tasks_map["C"].predecessors
+    assert "FB-C" in tasks_map["C"].predecessors
+
+    # Check project buffer integration
+    assert tasks_map["C"].successors == ["PB"]
+    assert tasks_map["PB"].predecessors == ["C"]
+
+
+def test_detect_feeding_chains():
+    """Tests the detection of feeding chains."""
+    tasks_map = {
+        "A": Task("A", "A", 1, predecessors=[]),
+        "B": Task("B", "B", 1, predecessors=["A"]),
+        "C": Task("C", "C", 1, predecessors=["B"]), # Critical chain: A-B-C
+        "F1": Task("F1", "F1", 1, predecessors=[]),
+        "F2": Task("F2", "F2", 1, predecessors=["F1"]), # Feeding chain: F1-F2
+    }
+    tasks_map["A"].successors = ["B"]
+    tasks_map["B"].successors = ["C"]
+    tasks_map["F1"].successors = ["F2"]
+    tasks_map["F2"].successors = ["C"] # Merges at C
+    tasks_map["C"].predecessors = ["B", "F2"]
+
+    critical_chain = ["A", "B", "C"]
+    for tid in critical_chain:
+        tasks_map[tid].on_critical_chain = True
+
+    feeding_chains = detect_feeding_chains(tasks_map, critical_chain)
+
+    assert "C" in feeding_chains
+    assert set(feeding_chains["C"]) == {"F1", "F2"}
+
+
+def test_calculate_feeding_buffers():
+    """Tests the calculation of feeding buffers."""
+    feeding_chains = {"C": ["F1", "F2"]}
+    tracker = SafetyTracker()
+    tracker.removed_safety = {"F1": 3, "F2": 4}
+
+    buffers = calculate_feeding_buffers(feeding_chains, tracker)
+
+    assert "FeedingBuffer-C" in buffers
+    buffer = buffers["FeedingBuffer-C"]
+    assert isinstance(buffer, FeedingBuffer)
+    assert buffer.duration == round((3 + 4) * 0.5)
+    assert buffer.linked_task == "C"
+
+
+def test_schedule_with_ccpm_end_to_end():
+    """Tests the full CCPM pipeline end-to-end."""
+    calendar = ProjectCalendar(non_working_days=[5, 6, 12, 13])
+    resources_map = {
+        "R1": Resource("R1", "Worker1"),
+        "R2": Resource("R2", "Worker2"),
+    }
+    tasks_list = [
+        Task("A", "A", 10, predecessors=[], resources=["R1"]),
+        Task("B", "B", 10, predecessors=["A"], resources=["R1"]), # Critical
+        Task("F", "F", 5, predecessors=[], resources=["R2"]),    # Feeder
+    ]
+    tasks_list[1].predecessors = ["A", "F"] # B depends on A and F
+    tasks_map = {t.id: t for t in tasks_list}
+
+    # The pipeline should identify the critical chain itself.
+    # A and B share a resource, so they form the critical chain.
+    result = schedule_with_ccpm(tasks_map, resources_map, calendar, max_day=100)
+
+    assert isinstance(result, CCPMScheduleResult)
+    assert result.critical_chain == ["A", "B"]
+    assert result.project_buffer is not None
+    assert "FeedingBuffer-B" in result.feeding_buffers
+
+    # Check if buffers are in the final task list
+    final_tasks = result.tasks
+    assert "ProjectBuffer" in final_tasks
+    assert "FeedingBuffer-B" in final_tasks
+
+    # Check durations have been updated
+    assert final_tasks["A"].duration == 5
+    assert final_tasks["F"].duration == 2 # round(5 * 0.5) = 2.5 -> 2
 
 
 def test_large_project_stress_test():
