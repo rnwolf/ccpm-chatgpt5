@@ -1,4 +1,7 @@
-# CCPM Tool ala ChatGPT-5
+# CCPM Tool
+
+Experiment to see if we can get AI coders to build a python CCPM schedeuling tool.
+
 
 ## Key features
 
@@ -23,16 +26,43 @@ The scheduler currently places tasks as late as possible inside their ALAP windo
 
 Defensive checks so that scheduling passes fail with clear errors instead of hanging in an infinite loop.
 
-## Next Steps
+## Development Next Steps
 
-implement compute_critical_chain() (if you want chain detection used to create project and feeding buffers),
 
-add buffer insertion routines (we sketched those earlier),
+### Phase 1: Fix Critical Bugs and Stabilize Core Logic
+
+1. **Fix Resource Modeling**:
+
+The `Resource` class is missing a mechanism to track its allocations over time. The `resource_constrained_alap` function tries to use an `allocations` attribute on the `Resource` object, which will cause a crash. I will add an `allocations` dictionary to the `Resource` class to fix this fundamental bug.
+
+2. **Consolidate Calendar Logic**:
+
+There's a mix of standalone functions and class methods for calendar calculations. This can lead to confusion and inconsistent behavior. I will consolidate the calendar logic into the `ProjectCalendar` class and update the rest of the code to use the methods from the class. This will provide a single, reliable source for all date-related calculations.
+
+3. **Introduce Unit Testing**:
+
+To ensure the core components are working correctly and to prevent future bugs, I will set up a basic testing file (`test_ccpm.py`). I'll start by adding tests for the calendar and resource logic. Do you have a preferred testing framework like `pytest`, or should I use Python's standard `unittest` library?
+
+### Phase 2: Verify Scheduling and Implement CCPM
+
+1. **Verify Scheduling Algorithms**:
+
+Once the core components are stable and tested, I will add specific tests for the scheduling algorithms (`compute_asap`, `compute_alap`, and `resource_constrained_alap`). Using simple, predictable project networks, we can verify that they produce correct schedules.
+
+2. **Implement Critical Chain Identification**:
+
+With a reliable resource-constrained schedule, I will implement the logic to identify the critical chain. This involves finding the longest path of resource-dependent tasks and setting the `on_critical_chain` flag on those tasks.
+
+3. **Implement Buffering**:
+
+Finally, I will add the core CCPM feature of buffer insertion. This includes writing functions to calculate buffer sizes (as a percentage of the chain's duration) and to insert `ProjectBuffer` and `FeedingBuffer` tasks into the project network with the correct dependencies.
+
+This phased approach will allow us to systematically debug the code, build a solid and testable foundation, and then implement the full set of CCPM features.
+
+### Phase 3 Enhancements
 
 add multi-unit resource capacity,
 
 add visualization / Gantt export.
 
 add multi-capacity resource support, or
-
-wire in the feeding/project buffer insertion and show a complete example with buffers inserted and schedule re-run.
