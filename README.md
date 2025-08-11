@@ -59,10 +59,10 @@ Finally, I will add the core CCPM feature of buffer insertion. This includes wri
 
 This phased approach will allow us to systematically debug the code, build a solid and testable foundation, and then implement the full set of CCPM features.
 
-### Phase 3 Enhancements
+### Phase 3 implement the full set of CCPM features
 
-add multi-unit resource capacity,
+add multi-unit resource capacity
 
-add visualization / Gantt export.
+add visualization / Gantt export
 
-add multi-capacity resource support, or
+add multi-capacity resource support
