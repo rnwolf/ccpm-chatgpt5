@@ -40,6 +40,30 @@ class ProjectCalendar:
                 d += 1
         return d + 1
 
+    def prev_working_day(self, day: int) -> int:
+        d = day
+        while not self.is_working_day(d):
+            d -= 1
+        return d
+
+    def subtract_working_days(self, end_day: int, days: int) -> int:
+        """
+        Returns the start day index given an end day and duration.
+        A task of duration 1 ending on a working day `d` will have a start day of `d`.
+        """
+        if days <= 0:
+            return end_day
+
+        d = end_day
+        remaining = days
+        while remaining > 0:
+            if self.is_working_day(d):
+                remaining -= 1
+            if remaining == 0:
+                break
+            d -= 1
+        return d
+
     def to_dict(self) -> Dict:
         return {"non_working_days": sorted(self.non_working_days)}
 
@@ -243,54 +267,6 @@ class FeedingBuffer(Buffer):
     pass
 
 
-# ------------------------
-# Helpers: working-day arithmetic
-# ------------------------
-def next_working_day(start: int, working_days: Set[int]) -> int:
-    d = start
-    while d not in working_days:
-        d += 1
-    return d
-
-
-def prev_working_day(start: int, working_days: Set[int]) -> int:
-    d = start
-    while d not in working_days:
-        d -= 1
-    return d
-
-
-def add_working_days_forward(start: int, days: int, working_days: Set[int]) -> int:
-    """Return the last day index (inclusive) after adding 'days' working days starting at 'start' inclusive.
-    Example: start=2, days=1 --> returns 2 (task of duration 1 occupies day 2).
-    """
-    if days <= 0:
-        return start - 1
-    d = start
-    remaining = days
-    while remaining > 0:
-        if d in working_days:
-            remaining -= 1
-            if remaining == 0:
-                return d
-        d += 1
-    return d - 1
-
-
-def subtract_working_days_backward(
-    end_day: int, duration: int, project_calendar: ProjectCalendar, resource: Resource
-) -> int:
-    """Count backwards from end_day to find the earliest start day
-    given duration in working days, skipping non-working days."""
-    remaining = duration
-    day = end_day
-    while remaining > 0:
-        day -= 1
-        if project_calendar.is_working_day(day) and resource.is_available(
-            day, project_calendar
-        ):
-            remaining -= 1
-    return day
 
 
 # ------------------------
@@ -458,21 +434,17 @@ def compute_asap(
     - max_day: horizon to build working-day set
     Returns a mapping {task_id: (asap_start, asap_finish)} and also populates task.asap_start/asap_finish.
     """
-    # build working-day set up to horizon
-    working_days = set(
-        d for d in range(max_day + 1) if project_calendar.is_working_day(d)
-    )
-
     order = topological_sort(tasks)  # expects tasks is a dict
     for tid in order:
         t = tasks[tid]
         if not t.predecessors:
-            start = next_working_day(0, working_days)
+            start = project_calendar.next_working_day(0)
         else:
             # predecessor asap_finish must exist — if not, treat as 0 (you can refine this)
             start = max((tasks[p].asap_finish or 0) + 1 for p in t.predecessors)
-            start = next_working_day(start, working_days)
-        finish = add_working_days_forward(start, t.duration, working_days)
+            start = project_calendar.next_working_day(start)
+        # add_working_days returns the day AFTER, so subtract 1 for inclusive finish day
+        finish = project_calendar.add_working_days(start, t.duration) - 1
         t.asap_start = start
         t.asap_finish = finish
 
@@ -486,14 +458,8 @@ def compute_alap(
     tasks: Dict[str, Task], project_calendar: ProjectCalendar, delivery_day: int
 ):
     """Compute ALAP start/finish anchored at delivery_day (latest possible ignoring resources)."""
-    working_days = set(
-        d
-        for d in range(max(project_calendar.non_working_days or [0]) + 365)
-        if project_calendar.is_working_day(d)
-    )
-    # ensure delivery_day is a working day, otherwise move to previous working day
-    if delivery_day not in working_days:
-        delivery_day = prev_working_day(delivery_day, working_days)
+    delivery_day = project_calendar.prev_working_day(delivery_day)
+
     succs = compute_successors(tasks)
     order = list(reversed(topological_sort(tasks)))
     for tid in order:
@@ -504,20 +470,10 @@ def compute_alap(
         else:
             # finish = min(start of successors) - 1 (but must be working day)
             finish = min(tasks[s].alap_start - 1 for s in succs[tid])
-            if finish not in working_days:
-                finish = prev_working_day(finish, working_days)
+            finish = project_calendar.prev_working_day(finish)
+
         # compute start by stepping backwards duration working days
-        # find earliest day d such that adding duration working days from d gives finish
-        # we can compute start by walking backwards
-        remaining = t.duration
-        d = finish
-        while remaining > 0:
-            if d in working_days:
-                remaining -= 1
-                if remaining == 0:
-                    start = d
-                    break
-            d -= 1
+        start = project_calendar.subtract_working_days(finish, t.duration)
         t.alap_start = start
         t.alap_finish = finish
 
@@ -567,6 +523,7 @@ def resource_constrained_alap(
 
     # Start with all tasks unscheduled
     unscheduled = set(task_lookup.keys())
+    order = list(reversed(topological_sort(task_lookup)))
     progress = True
     iteration = 0
 
@@ -574,18 +531,21 @@ def resource_constrained_alap(
         progress = False
         iteration += 1
 
-        for tid in list(unscheduled):
+        for tid in order:
+            if tid not in unscheduled:
+                continue
+
             task = task_lookup[tid]
 
-            # Check predecessors scheduled?
-            preds_done = all(
-                schedule[pred_id][0] is not None for pred_id in task.predecessors
+            # Check successors scheduled? (This is a backward pass)
+            succs_done = all(
+                schedule[succ_id][0] is not None for succ_id in task.successors
             )
 
-            if not preds_done:
+            if not succs_done:
                 if diagnostic:
-                    missing = [p for p in task.predecessors if schedule[p][0] is None]
-                    print(f"Task {tid} blocked: unscheduled predecessors {missing}")
+                    missing = [s for s in task.successors if schedule[s][0] is None]
+                    print(f"Task {tid} blocked: unscheduled successors {missing}")
                 continue
 
             # Determine latest possible finish = min(start of successors) - 1
@@ -595,9 +555,7 @@ def resource_constrained_alap(
                     for sid in task.successors
                     if schedule[sid][0] is not None
                 )
-                latest_finish = (
-                    min_succ_start - 1 if min_succ_start is not None else max_day
-                )
+                latest_finish = min_succ_start - 1
             else:
                 latest_finish = max_day
 
@@ -613,8 +571,9 @@ def resource_constrained_alap(
 
                 # Check resource availability for ALL resources in task
                 resources_ok = True
-                for res_id, units_required in task.resources.items():
+                for res_id in task.resources:
                     res = resources[res_id]
+                    units_required = 1  # Assuming 1 unit per resource
                     if any(
                         res.allocations.get(day, 0) + units_required
                         > res.capacity_per_day
@@ -627,11 +586,14 @@ def resource_constrained_alap(
                                 f"Task {tid} blocked at {start_day}-{finish_day} by resource {res_id} (capacity exceeded)"
                             )
                         break
+                if not resources_ok:
+                    continue
 
                 if resources_ok:
                     # Allocate resources
-                    for res_id, units_required in task.resources.items():
+                    for res_id in task.resources:
                         res = resources[res_id]
+                        units_required = 1  # Assuming 1 unit per resource
                         for day in range(start_day, finish_day + 1):
                             if project_calendar.is_working_day(day):
                                 res.allocations[day] = (
@@ -735,7 +697,14 @@ def schedule_tasks(
         diagnostic=diagnostic,
     )
 
-    # --- Merge results ---
+    # --- Merge results and update task objects ---
+    for tid, task in task_lookup.items():
+        if tid in asap_schedule:
+            task.asap_start, task.asap_finish = asap_schedule[tid]
+        if tid in alap_schedule:
+            task.alap_start, task.alap_finish = alap_schedule[tid]
+            task.scheduled_start, task.scheduled_finish = alap_schedule[tid]
+
     schedule_map = {
         "ASAP": asap_schedule,
         "ALAP": alap_schedule,
@@ -842,11 +811,13 @@ if __name__ == "__main__":
         non_working_days=[d for d in range(0, 100) if d % 7 in (5, 6)]
     )
 
-    resources = [
-        Resource("R1", "Alice", non_working_days=[]),  # Alice off on day 7
+    resources_list = [
+        Resource("R1", "Alice", non_working_days=[]),
         Resource("R2", "Bob", non_working_days=[]),
         Resource("R3", "Charlie", non_working_days=[]),
     ]
+    resources_map = {r.id: r for r in resources_list}
+
 
     tasks = [
         Task("T1", "Spec", 4, resources=["R1"], predecessors=[]),
@@ -855,10 +826,14 @@ if __name__ == "__main__":
         Task("T4", "Doc", 2, resources=["R1"], predecessors=["T1"]),
     ]
 
-    schedule_map = schedule_tasks(tasks, resources, calendar, max_day=60, max_iters=6)
+    schedule_map = schedule_tasks(tasks, resources_map, calendar, max_day=60, max_iters=10)
     print("Schedule results:")
-    for tid, (s, e) in schedule_map.items():
-        print(tid, "start:", s, "finish:", e)
+    for schedule_name, schedule in schedule_map.items():
+        print(f"--- {schedule_name} ---")
+        for tid, (s, e) in sorted(schedule.items()):
+            print(f"  Task {tid}: start: {s}, finish: {e}")
+
     # For viewing in marimo, you can convert tasks to DataFrame
     df = tasks_to_df(tasks)
+    print("\n--- Task Details ---")
     print(df.to_string(index=False))

@@ -1,9 +1,12 @@
 [project]
 name = "ccpm-chatgpt5"
 version = "0.1.0"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "pandas>=2.0",
     "pyright>=1.1.403",
     "pytest-cov>=6.2.1",
 ]
+
+[tool.setuptools]
+py_modules = ["ccpm_module"]
