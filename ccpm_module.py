@@ -1,5 +1,6 @@
 # ccpm_module3.py
-from typing import List, Dict, Optional, Set, Tuple, Union
+from typing import List, Dict, Optional, Set, Tuple, Union, Any
+from dataclasses import dataclass
 import pandas as pd
 
 
@@ -140,6 +141,7 @@ class Task:
         self.scheduled_finish: Optional[int] = None
         self.on_critical_chain: bool = False
         self.successors: List[str] = []
+        self.original_duration: Optional[int] = None
 
     def get_predecessors(self) -> List[str]:
         """Returns a list of predecessor task IDs."""
@@ -164,6 +166,7 @@ class Task:
             "scheduled_start": self.scheduled_start,
             "scheduled_finish": self.scheduled_finish,
             "on_critical_chain": self.on_critical_chain,
+            "original_duration": self.original_duration,
         }
 
     @classmethod
@@ -189,6 +192,7 @@ class Task:
         t.scheduled_start = data.get("scheduled_start")
         t.scheduled_finish = data.get("scheduled_finish")
         t.on_critical_chain = bool(data.get("on_critical_chain", False))
+        t.original_duration = data.get("original_duration")
         return t
 
 
@@ -267,6 +271,188 @@ class FeedingBuffer(Buffer):
     pass
 
 
+class SafetyTracker:
+    """Track safety time removed from tasks for buffer calculations"""
+    def __init__(self):
+        self.removed_safety: Dict[str, int] = {}
+        self.chain_safety: Dict[str, int] = {}
+
+    def calculate_chain_safety(self, chain_tasks: List[str]) -> int:
+        """Sum removed safety for a chain of tasks"""
+        return sum(self.removed_safety.get(tid, 0) for tid in chain_tasks)
+
+
+def detect_feeding_chains(
+    tasks: Dict[str, Task], critical_chain: List[str]
+) -> Dict[str, List[str]]:
+    """
+    For each critical chain task, identify feeding chains that merge into it.
+    Returns mapping: {critical_task_id: [feeding_chain_task_ids]}
+    """
+    critical_chain_set = set(critical_chain)
+    feeding_chains: Dict[str, List[str]] = {}
+
+    for task_id, task in tasks.items():
+        if task_id in critical_chain_set:
+            continue
+
+        # Find the first critical chain task this task feeds into
+        q = list(task.successors)
+        visited = set(q)
+        merge_point = None
+
+        while q:
+            curr_id = q.pop(0)
+            if curr_id in critical_chain_set:
+                merge_point = curr_id
+                break
+
+            for succ_id in tasks[curr_id].successors:
+                if succ_id not in visited:
+                    q.append(succ_id)
+                    visited.add(succ_id)
+
+        if merge_point:
+            # We found that `task_id` is part of a chain that feeds into `merge_point`.
+            # Now, trace back from `task_id` to find the whole chain.
+            chain = []
+            q_back = [task_id]
+            visited_back = {task_id}
+            while q_back:
+                curr_back_id = q_back.pop(0)
+                if tasks[curr_back_id].on_critical_chain:
+                    continue
+                chain.append(curr_back_id)
+                for pred_id in tasks[curr_back_id].predecessors:
+                    if pred_id not in visited_back:
+                        q_back.append(pred_id)
+                        visited_back.add(pred_id)
+
+            if merge_point not in feeding_chains:
+                feeding_chains[merge_point] = []
+            feeding_chains[merge_point].extend(chain)
+
+    # Remove duplicates
+    for merge_point in feeding_chains:
+        feeding_chains[merge_point] = list(dict.fromkeys(feeding_chains[merge_point]))
+
+    return feeding_chains
+
+
+def integrate_buffers_into_schedule(
+    tasks: Dict[str, Task],
+    project_buffer: Optional[ProjectBuffer],
+    feeding_buffers: Dict[str, FeedingBuffer],
+) -> None:
+    """
+    Insert buffer tasks into project network with proper dependencies.
+    This function modifies the tasks dictionary in-place.
+    """
+    # Add feeding buffers to the main task list
+    for buffer in feeding_buffers.values():
+        tasks[buffer.id] = buffer
+
+    # Wire feeding buffers into the graph
+    for buffer in feeding_buffers.values():
+        merge_point_task = tasks[buffer.linked_task]
+
+        # The buffer's successor is the merge point task
+        buffer.successors = [buffer.linked_task]
+
+        # Find the tasks at the end of the feeding chain
+        # These are the tasks that originally fed into the merge point
+        feeding_chain_endpoints = [
+            tid for tid, task in tasks.items()
+            if buffer.linked_task in task.successors
+            and not task.on_critical_chain
+            and not isinstance(task, Buffer)
+        ]
+
+        buffer.predecessors = feeding_chain_endpoints
+
+        # Re-wire the graph
+        for pred_id in feeding_chain_endpoints:
+            pred_task = tasks[pred_id]
+            # The predecessor's successor is now the buffer, not the merge point
+            pred_task.successors = [s for s in pred_task.successors if s != buffer.linked_task]
+            pred_task.successors.append(buffer.id)
+
+        # The merge point's predecessor is now the buffer
+        merge_point_task.predecessors = [p for p in merge_point_task.predecessors if p not in feeding_chain_endpoints]
+        merge_point_task.predecessors.append(buffer.id)
+
+    # Wire in the project buffer
+    if project_buffer:
+        # Find the last task(s) in the project (tasks with no successors)
+        # and make them predecessors to the project buffer.
+        last_task_ids = [tid for tid, task in tasks.items() if not task.successors and task.id != project_buffer.id]
+
+        project_buffer.predecessors = last_task_ids
+        for tid in last_task_ids:
+            tasks[tid].successors.append(project_buffer.id)
+
+        tasks[project_buffer.id] = project_buffer
+
+
+def calculate_feeding_buffers(
+    feeding_chains: Dict[str, List[str]],
+    safety_tracker: SafetyTracker,
+    buffer_factor: float = 0.5,
+) -> Dict[str, FeedingBuffer]:
+    """Calculate and create feeding buffer objects"""
+    buffers: Dict[str, FeedingBuffer] = {}
+    for merge_point, chain in feeding_chains.items():
+        buffer_size = round(safety_tracker.calculate_chain_safety(chain) * buffer_factor)
+        if buffer_size > 0:
+            buffer_id = f"FeedingBuffer-{merge_point}"
+            buffer_name = f"Feeding Buffer for {merge_point}"
+            buffer = FeedingBuffer(buffer_id, buffer_name, buffer_size, linked_task=merge_point)
+            buffers[buffer_id] = buffer
+    return buffers
+
+
+def calculate_project_buffer(
+    critical_chain_tasks: List[str],
+    safety_tracker: SafetyTracker,
+    buffer_factor: float = 0.5,
+) -> int:
+    """
+    Calculate project buffer size (typically 50% of removed critical chain safety).
+    """
+    removed_safety = safety_tracker.calculate_chain_safety(critical_chain_tasks)
+    return round(removed_safety * buffer_factor)
+
+
+def insert_project_buffer(
+    tasks: Dict[str, Task],
+    critical_chain: List[str],
+    buffer_size: int,
+) -> ProjectBuffer:
+    """Creates a project buffer task object."""
+    buffer_id = "ProjectBuffer"
+    buffer_name = "Project Buffer"
+    buffer = ProjectBuffer(buffer_id, buffer_name, buffer_size)
+    return buffer
+
+
+def calculate_aggressive_durations(
+    tasks: Dict[str, Task],
+    safety_tracker: SafetyTracker,
+    safety_factor: float = 0.5
+) -> None:
+    """
+    Remove safety padding from individual task estimates and update the tracker.
+    Default: reduce to 50% of original duration (aggressive but achievable).
+    """
+    for task in tasks.values():
+        if task.original_duration is None:
+            task.original_duration = task.duration
+
+        aggressive_duration = round(task.original_duration * (1 - safety_factor))
+        removed_safety = task.original_duration - aggressive_duration
+
+        task.duration = aggressive_duration
+        safety_tracker.removed_safety[task.id] = removed_safety
 
 
 # ------------------------
@@ -779,6 +965,79 @@ def schedule_tasks(
             print(f"Task {tid}: ASAP {asap_s}, ALAP {alap_s}")
 
     return schedule_map
+
+
+# ------------------------
+# CCPM Pipeline
+# ------------------------
+@dataclass
+class CCPMScheduleResult:
+    """Complete CCPM scheduling results"""
+    tasks: Dict[str, Task]
+    critical_chain: List[str]
+    project_buffer: Optional[ProjectBuffer]
+    feeding_buffers: Dict[str, FeedingBuffer]
+    safety_tracker: SafetyTracker
+    schedule_statistics: Dict[str, Any]
+
+    def to_dataframe(self) -> pd.DataFrame:
+        """Export complete schedule to DataFrame"""
+        return tasks_to_df(list(self.tasks.values()))
+
+
+def schedule_with_ccpm(
+    tasks: Union[List[Task], Dict[str, Task]],
+    resources: Dict[str, Resource],
+    project_calendar: ProjectCalendar,
+    max_day: int,
+    safety_factor: float = 0.5,
+    buffer_factor: float = 0.5,
+) -> CCPMScheduleResult:
+    """
+    Complete CCPM scheduling pipeline.
+    """
+    # Normalize tasks to dict
+    if isinstance(tasks, list):
+        task_lookup = {t.id: t for t in tasks}
+    else:
+        task_lookup = tasks
+
+    # 1. Initial ASAP/ALAP scheduling
+    initial_schedule = schedule_tasks(task_lookup, resources, project_calendar, max_day)
+
+    # 2. Critical chain identification
+    critical_chain = identify_critical_chain(task_lookup, initial_schedule["ALAP"])
+
+    # 3. Duration adjustment (safety removal)
+    safety_tracker = SafetyTracker()
+    calculate_aggressive_durations(task_lookup, safety_tracker, safety_factor)
+
+    # 4. Buffer calculation
+    project_buffer_size = calculate_project_buffer(critical_chain, safety_tracker, buffer_factor)
+    project_buffer = insert_project_buffer(task_lookup, critical_chain, project_buffer_size)
+
+    feeding_chains = detect_feeding_chains(task_lookup, critical_chain)
+    feeding_buffers = calculate_feeding_buffers(feeding_chains, safety_tracker, buffer_factor)
+
+    # 5. Buffer integration
+    integrate_buffers_into_schedule(task_lookup, project_buffer, feeding_buffers)
+
+    # 6. Final scheduling with buffers
+    final_schedule = schedule_tasks(task_lookup, resources, project_calendar, max_day)
+
+    # 7. Validation and diagnostics
+    stats = analyze_schedule_quality(
+        task_lookup, final_schedule["ASAP"], final_schedule["ALAP"], resources
+    )
+
+    return CCPMScheduleResult(
+        tasks=task_lookup,
+        critical_chain=critical_chain,
+        project_buffer=project_buffer,
+        feeding_buffers=feeding_buffers,
+        safety_tracker=safety_tracker,
+        schedule_statistics=stats,
+    )
 
 
 # ------------------------
