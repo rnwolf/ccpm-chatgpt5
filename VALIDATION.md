@@ -60,6 +60,48 @@ For each scenario, the following steps were taken:
 
 *   **Notes**: The total number of tasks (7 from CSV + 1 project buffer + 2 feeding buffers) is correct, confirming that the feeding chains were detected and their buffers created.
 
+## Advanced Scenarios (Excel-based)
+
+These scenarios use Excel files as input to test the scheduler's handling of more complex constraints, particularly project and resource calendars.
+
+### Validation Process for Excel Scenarios
+
+For each scenario, use the following command to generate the schedule and save the output to an Excel file for manual inspection:
+
+```bash
+uv run ccpm_cli.py schedule <scenario_file.xlsx> --output <output_file.xlsx> --verbose
+```
+
+### Scenario 4: Calendar Impact
+
+*   **File**: `scenario_calendar_impact.xlsx`
+*   **Description**: A simple linear project with weekends and a project-wide holiday defined.
+*   **Purpose**: To validate that the scheduler correctly accounts for non-working days in the project calendar.
+*   **Validation Steps**:
+    1.  Run `uv run ccpm_cli.py schedule scenario_calendar_impact.xlsx -o output_calendar_impact.xlsx --verbose`.
+    2.  Open `output_calendar_impact.xlsx` and inspect the `Tasks` sheet.
+    3.  Verify that the `scheduled_start` and `scheduled_finish` dates for the tasks correctly skip over the weekends and holidays defined in the `ProjectCalendar` sheet.
+
+### Scenario 5: Resource Vacation
+
+*   **File**: `scenario_resource_vacation.xlsx`
+*   **Description**: A project with resource contention where the shared resource has specific vacation days.
+*   **Purpose**: To validate the handling of combined resource and calendar constraints.
+*   **Validation Steps**:
+    1.  Run `uv run ccpm_cli.py schedule scenario_resource_vacation.xlsx -o output_resource_vacation.xlsx --verbose`.
+    2.  Inspect the output file.
+    3.  Verify that the tasks assigned to the resource with vacation days are not scheduled during those non-working days.
+
+### Scenario 6: Multiple Resource Calendars
+
+*   **File**: `scenario_multi_calendar.xlsx`
+*   **Description**: A project with multiple feeding chains and resources with different non-working days.
+*   **Purpose**: To validate the scheduler's ability to handle multiple, independent resource calendars simultaneously.
+*   **Validation Steps**:
+    1.  Run `uv run ccpm_cli.py schedule scenario_multi_calendar.xlsx -o output_multi_calendar.xlsx --verbose`.
+    2.  Inspect the output file.
+    3.  Verify that the tasks are scheduled according to the specific availability of their assigned resources.
+
 ## Conclusion
 
-The manual validation of these three scenarios confirms that the core CCPM scheduling engine is working correctly for a range of common project structures. The critical chain identification, safety removal, and buffer calculation and integration logic are all functioning as expected.
+The manual validation of these scenarios confirms that the core CCPM scheduling engine is working correctly for a range of common project structures. The critical chain identification, safety removal, and buffer calculation and integration logic are all functioning as expected.

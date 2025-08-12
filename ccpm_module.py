@@ -1109,6 +1109,8 @@ def schedule_tasks(
 class CCPMScheduleResult:
     """Complete CCPM scheduling results"""
     tasks: Dict[str, Task]
+    resources: Dict[str, Resource]
+    project_calendar: ProjectCalendar
     critical_chain: List[str]
     project_buffer: Optional[ProjectBuffer]
     feeding_buffers: Dict[str, FeedingBuffer]
@@ -1167,6 +1169,8 @@ def schedule_with_ccpm(
 
     return CCPMScheduleResult(
         tasks=task_lookup,
+        resources=resources,
+        project_calendar=project_calendar,
         critical_chain=critical_chain,
         project_buffer=project_buffer,
         feeding_buffers=feeding_buffers,

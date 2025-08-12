@@ -157,59 +157,93 @@ def load_from_json(file_path: str) -> tuple[List[Task], List[Resource], ProjectC
     return tasks, resources, calendar
 
 def load_from_excel(file_path: str) -> tuple[List[Task], List[Resource], ProjectCalendar]:
-    """Load project from Excel file"""
-    # Implementation for Excel loading
-    tasks_df = pd.read_excel(file_path, sheet_name='Tasks')
+    """Load a complete project definition from an Excel file."""
+    xls = pd.ExcelFile(file_path)
+
+    # Load Tasks
+    if 'Tasks' not in xls.sheet_names:
+        raise ValueError("Excel file must contain a 'Tasks' sheet.")
+    tasks_df = pd.read_excel(xls, sheet_name='Tasks')
     tasks = [Task.from_dict(row.to_dict()) for _, row in tasks_df.iterrows()]
 
-    try:
-        resources_df = pd.read_excel(file_path, sheet_name='Resources')
+    # Load Resources
+    if 'Resources' in xls.sheet_names:
+        resources_df = pd.read_excel(xls, sheet_name='Resources')
         resources = [Resource.from_dict(row.to_dict()) for _, row in resources_df.iterrows()]
-    except:
+    else:
         # Create default resources if sheet doesn't exist
         resource_ids = set()
         for task in tasks:
             resource_ids.update(task.resources)
         resources = [Resource(resource_id=rid, name=rid) for rid in resource_ids]
 
-    calendar = ProjectCalendar()  # Default calendar
+    # Load Project Calendar
+    if 'ProjectCalendar' in xls.sheet_names:
+        calendar_df = pd.read_excel(xls, sheet_name='ProjectCalendar')
+        non_working_days = calendar_df['non_working_days'].tolist()
+        calendar = ProjectCalendar(non_working_days=non_working_days)
+    else:
+        calendar = ProjectCalendar()  # Default calendar
+
     return tasks, resources, calendar
 
 def save_schedule(schedule: 'CCPMScheduleResult', file_path: str) -> None:
-    """Save schedule to JSON file"""
-    # TODO: Implement proper serialization
-    data = {
-        'tasks': {tid: task.to_dict() for tid, task in schedule.tasks.items()},
-        'critical_chain': schedule.critical_chain,
-        'project_buffer': schedule.project_buffer.to_dict() if schedule.project_buffer else None,
-        'feeding_buffers': {bid: buf.to_dict() for bid, buf in schedule.feeding_buffers.items()},
-        'safety_removed': schedule.safety_tracker.removed_safety,
-        'schedule_statistics': schedule.schedule_statistics
-    }
+    """Save schedule to JSON or Excel file based on extension."""
+    if file_path.endswith('.xlsx'):
+        # Save to Excel
+        tasks_df = pd.DataFrame([t.to_dict() for t in schedule.tasks.values()])
+        resources_df = pd.DataFrame([r.to_dict() for r in schedule.resources.values()])
+        calendar_df = pd.DataFrame(schedule.project_calendar.to_dict()['non_working_days'], columns=['non_working_days'])
 
-    with open(file_path, 'w') as f:
-        json.dump(data, f, indent=2)
+        with pd.ExcelWriter(file_path) as writer:
+            tasks_df.to_excel(writer, sheet_name='Tasks', index=False)
+            resources_df.to_excel(writer, sheet_name='Resources', index=False)
+            calendar_df.to_excel(writer, sheet_name='ProjectCalendar', index=False)
+    else:
+        # Save to JSON
+        data = {
+            'tasks': {tid: task.to_dict() for tid, task in schedule.tasks.items()},
+            'resources': {rid: res.to_dict() for rid, res in schedule.resources.items()},
+            'calendar': schedule.project_calendar.to_dict(),
+            'critical_chain': schedule.critical_chain,
+            'project_buffer': schedule.project_buffer.to_dict() if schedule.project_buffer else None,
+            'feeding_buffers': {bid: buf.to_dict() for bid, buf in schedule.feeding_buffers.items()},
+            'safety_tracker': {
+                'removed_safety': schedule.safety_tracker.removed_safety,
+                'chain_safety': schedule.safety_tracker.chain_safety,
+            },
+            'schedule_statistics': schedule.schedule_statistics
+        }
+
+        with open(file_path, 'w') as f:
+            json.dump(data, f, indent=2)
 
 def load_schedule(file_path: str) -> 'CCPMScheduleResult':
-    """Load schedule from JSON file"""
+    """Load schedule from a JSON file."""
+    if not file_path.endswith('.json'):
+        raise ValueError("Loading schedule from formats other than JSON is not supported.")
+
     with open(file_path) as f:
         data = json.load(f)
 
     from ccpm_module import SafetyTracker, ProjectBuffer, FeedingBuffer
 
-    # Basic deserialization
     tasks = {tid: Task.from_dict(task_data) for tid, task_data in data['tasks'].items()}
+    resources = {rid: Resource.from_dict(res_data) for rid, res_data in data.get('resources', {}).items()}
+    calendar = ProjectCalendar.from_dict(data.get('calendar', {}))
 
-    # Create safety tracker from saved data
     safety_tracker = SafetyTracker()
-    safety_tracker.removed_safety = data.get('safety_removed', {})
+    if 'safety_tracker' in data:
+        safety_tracker.removed_safety = data['safety_tracker'].get('removed_safety', {})
+        safety_tracker.chain_safety = data['safety_tracker'].get('chain_safety', {})
 
-    # TODO: Proper buffer deserialization
     project_buffer = ProjectBuffer.from_dict(data['project_buffer']) if data.get('project_buffer') else None
     feeding_buffers = {bid: FeedingBuffer.from_dict(buf_data) for bid, buf_data in data.get('feeding_buffers', {}).items()}
 
     result = CCPMScheduleResult(
         tasks=tasks,
+        resources=resources,
+        project_calendar=calendar,
         critical_chain=data.get('critical_chain', []),
         project_buffer=project_buffer,
         feeding_buffers=feeding_buffers,
