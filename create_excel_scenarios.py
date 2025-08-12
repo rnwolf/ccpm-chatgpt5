@@ -1,7 +1,7 @@
 import pandas as pd
 from ccpm_module import Task, Resource, ProjectCalendar
 
-def create_scenario_calendar_impact():
+def create_scenario_calendar_impact() -> None:
     """
     Scenario 1: A simple linear project to demonstrate the impact of
     weekends and holidays on the schedule.
@@ -20,14 +20,14 @@ def create_scenario_calendar_impact():
 
     # Weekends (Sat/Sun) and a holiday on day 8
     non_working_days = [d for d in range(0, 30) if d % 7 in (5, 6)] + [8]
-    calendar_df = pd.DataFrame(non_working_days, columns=['non_working_days'])
+    calendar_df = pd.DataFrame({'non_working_days': non_working_days})
 
     with pd.ExcelWriter('scenario_calendar_impact.xlsx') as writer:
         tasks_df.to_excel(writer, sheet_name='Tasks', index=False)
         resources_df.to_excel(writer, sheet_name='Resources', index=False)
         calendar_df.to_excel(writer, sheet_name='ProjectCalendar', index=False)
 
-def create_scenario_resource_vacation():
+def create_scenario_resource_vacation() -> None:
     """
     Scenario 2: A project with resource contention where a key resource
     has specific vacation days.
@@ -49,14 +49,14 @@ def create_scenario_resource_vacation():
 
     # Weekends (Sat/Sun)
     non_working_days = [d for d in range(0, 40) if d % 7 in (5, 6)]
-    calendar_df = pd.DataFrame(non_working_days, columns=['non_working_days'])
+    calendar_df = pd.DataFrame({'non_working_days': non_working_days})
 
     with pd.ExcelWriter('scenario_resource_vacation.xlsx') as writer:
         tasks_df.to_excel(writer, sheet_name='Tasks', index=False)
         resources_df.to_excel(writer, sheet_name='Resources', index=False)
         calendar_df.to_excel(writer, sheet_name='ProjectCalendar', index=False)
 
-def create_scenario_multi_calendar():
+def create_scenario_multi_calendar() -> None:
     """
     Scenario 3: A complex project with feeding chains where different
     resources have their own unique non-working days.
@@ -81,7 +81,7 @@ def create_scenario_multi_calendar():
 
     # Weekends (Sat/Sun)
     non_working_days = [d for d in range(0, 60) if d % 7 in (5, 6)]
-    calendar_df = pd.DataFrame(non_working_days, columns=['non_working_days'])
+    calendar_df = pd.DataFrame({'non_working_days': non_working_days})
 
     with pd.ExcelWriter('scenario_multi_calendar.xlsx') as writer:
         tasks_df.to_excel(writer, sheet_name='Tasks', index=False)
