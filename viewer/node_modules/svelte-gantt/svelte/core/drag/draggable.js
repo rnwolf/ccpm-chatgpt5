@@ -1,0 +1,173 @@
+import { isLeftClick, addEventListenerOnce, getRelativePos } from '../../utils/dom';
+import { MIN_DRAG_Y, MIN_DRAG_X } from '../constants';
+function getAccessor(accessor) {
+    if (accessor instanceof Function) {
+        return () => accessor();
+    }
+    else {
+        return () => accessor;
+    }
+}
+/**
+ * Applies dragging interaction to gantt elements
+ */
+export function useDraggable(node, options) {
+    const onMousedown = createDraggable(options);
+    node.addEventListener('pointerdown', onMousedown);
+    return {
+        destroy() {
+            node.removeEventListener('pointerdown', onMousedown, false);
+        }
+    };
+}
+/**
+ * Applies dragging interaction to gantt elements
+ */
+export function createDraggable(options) {
+    let mouseStartPosX;
+    let mouseStartPosY;
+    let mouseStartRight;
+    let direction;
+    let dragging = false;
+    let resizing = false;
+    let initialX;
+    let initialY;
+    let triggered = false;
+    const dragAllowed = getAccessor(options.dragAllowed);
+    const resizeAllowed = getAccessor(options.resizeAllowed);
+    function onMousedown(event) {
+        if (!isLeftClick(event)) {
+            return;
+        }
+        event.stopPropagation();
+        event.preventDefault();
+        const canDrag = dragAllowed();
+        const canResize = resizeAllowed();
+        if (!canDrag && !canResize) {
+            return;
+        }
+        const x = options.getX(event);
+        const y = options.getY(event);
+        const width = options.getWidth();
+        initialX = event.clientX;
+        initialY = event.clientY;
+        mouseStartRight = x + width;
+        mouseStartPosX = getRelativePos(options.container, event).x - x;
+        mouseStartPosY = getRelativePos(options.container, event).y - y;
+        if (canResize && mouseStartPosX <= options.resizeHandleWidth) {
+            direction = 'left';
+            resizing = true;
+        }
+        if (canResize && mouseStartPosX >= width - options.resizeHandleWidth) {
+            direction = 'right';
+            resizing = true;
+        }
+        if (canDrag && !resizing) {
+            dragging = true;
+        }
+        if ((dragging || resizing) && options.onDown) {
+            options.onDown({
+                mouseEvent: event,
+                x,
+                width,
+                y,
+                resizing: resizing,
+                dragging: dragging
+            });
+        }
+        window.addEventListener('pointermove', onMousemove, false);
+        addEventListenerOnce(window, 'pointerup', onMouseup);
+    }
+    ;
+    function onMousemove(event) {
+        if (!triggered) {
+            if (Math.abs(event.clientX - initialX) > MIN_DRAG_X ||
+                Math.abs(event.clientY - initialY) > MIN_DRAG_Y) {
+                triggered = true;
+            }
+            else {
+                return;
+            }
+        }
+        event.preventDefault();
+        if (resizing) {
+            const mousePos = getRelativePos(options.container, event);
+            const x = options.getX(event);
+            const width = options.getWidth();
+            let resultX;
+            let resultWidth;
+            if (direction === 'left') {
+                if (mouseStartRight - mousePos.x <= 0) {
+                    direction = 'right';
+                    resultX = mouseStartRight;
+                    resultWidth = mouseStartRight - mousePos.x;
+                    mouseStartRight = mouseStartRight + width;
+                }
+                else {
+                    resultX = mousePos.x;
+                    resultWidth = mouseStartRight - mousePos.x;
+                }
+            }
+            else if (direction === 'right') {
+                //resize right
+                if (mousePos.x - x <= 0) {
+                    direction = 'left';
+                    resultX = mousePos.x;
+                    resultWidth = mousePos.x - x;
+                    mouseStartRight = x;
+                }
+                else {
+                    resultX = x;
+                    resultWidth = mousePos.x - x;
+                }
+            }
+            if (options.onResize) {
+                options.onResize({
+                    x: resultX,
+                    width: resultWidth,
+                    event
+                });
+            }
+        }
+        // mouseup
+        if (dragging && options.onDrag) {
+            const mousePos = getRelativePos(options.container, event);
+            options.onDrag({
+                x: mousePos.x - mouseStartPosX, // maybe this is the rounding error
+                y: mousePos.y - mouseStartPosY,
+                event
+            });
+        }
+    }
+    ;
+    function onMouseup(event) {
+        const x = options.getX(event);
+        const y = options.getY(event);
+        const width = options.getWidth();
+        options.onMouseUp && options.onMouseUp();
+        // there is an issue here maybe, we update task according to the mousemove event, but we ignore the mouseup event and use the previously commited x, y and width
+        // you know those issues when task gets rounded incorrectly on resize? could be the cause
+        // ....or not really, this issue results in task resizing when task is merely dragged
+        if (triggered && options.onDrop) {
+            options.onDrop({
+                mouseEvent: event,
+                x,
+                y,
+                width,
+                dragging: dragging,
+                resizing: resizing
+            });
+        }
+        mouseStartPosX = null;
+        mouseStartPosY = null;
+        mouseStartRight = null;
+        dragging = false;
+        resizing = false;
+        initialX = null;
+        initialY = null;
+        triggered = false;
+        window.removeEventListener('pointermove', onMousemove, false);
+    }
+    ;
+    return onMousedown;
+}
