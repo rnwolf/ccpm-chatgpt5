@@ -1,0 +1,9 @@
+id,name,duration,predecessors,resources,description
+T1,Project Initiation,5,,,"Define project scope, goals, and stakeholders."
+T2,Requirement Gathering,10,T1,BA1,Gather and document project requirements from stakeholders.
+T3,Design,8,T2,DE1,Create system design and architecture.
+T4,Development - Module A,15,T3,"DV1,DV2",Develop and unit test Module A.
+T5,Development - Module B,12,T3,DV2,Develop and unit test Module B.
+T6,Integration,5,"T4,T5","DV1,DV2",Integrate Module A and B.
+T7,Testing,10,T6,QA1,Perform system and user acceptance testing.
+T8,Deployment,3,T7,,Deploy the application to production.
