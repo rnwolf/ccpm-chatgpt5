@@ -111,10 +111,15 @@ class Resource:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Resource":
+        non_working_days_str = data.get("non_working_days")
+        non_working_days = []
+        if pd.notna(non_working_days_str) and non_working_days_str:
+            non_working_days = [int(d.strip()) for d in str(non_working_days_str).split(',') if d.strip()]
+
         return cls(
             resource_id=data["id"],
             name=data["name"],
-            non_working_days=data.get("non_working_days", []),
+            non_working_days=non_working_days,
             capacity_per_day=data.get("capacity_per_day", 1),
         )
 
@@ -237,11 +242,17 @@ class Task:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Task":
         """Deserializes task from a dictionary."""
+        # print(f"DEBUG: Loading task from data: {data}") # Temporary debug logging
+
         resources_str = data.get("resources", "")
-        resources = [r.strip() for r in str(resources_str).split(",") if r.strip() and pd.notna(resources_str)]
+        if pd.isna(resources_str):
+            resources_str = ""
+        resources = [r.strip() for r in str(resources_str).split(',') if r.strip()]
 
         predecessors_str = data.get("predecessors", "")
-        preds = [p.strip() for p in str(predecessors_str).split(",") if p.strip() and pd.notna(predecessors_str)]
+        if pd.isna(predecessors_str):
+            predecessors_str = ""
+        preds = [p.strip() for p in str(predecessors_str).split(',') if p.strip()]
 
         t = cls(
             task_id=data["id"],

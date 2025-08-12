@@ -1,0 +1,15 @@
+Loading project from scenario_multi_calendar.xlsx...
+Loaded 7 tasks and 3 resources
+Creating CCPM schedule...
+Running full CCPM scheduling pipeline...
+CCPM Schedule created successfully.
+
+============================================================
+CCPM SCHEDULE SUMMARY
+============================================================
+Total Tasks: 10
+Completed Tasks: 0
+Progress: 0.0%
+Critical Chain Length: 4 tasks
+Project Duration: 362 days
+Total Safety Removed: 34 days
