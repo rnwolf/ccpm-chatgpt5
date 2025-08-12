@@ -237,8 +237,11 @@ class Task:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Task":
         """Deserializes task from a dictionary."""
-        resources = [r.strip() for r in str(data.get("resources", "")).split(",") if r.strip()]
-        preds = [p.strip() for p in str(data.get("predecessors", "")).split(",") if p.strip()]
+        resources_str = data.get("resources", "")
+        resources = [r.strip() for r in str(resources_str).split(",") if r.strip() and pd.notna(resources_str)]
+
+        predecessors_str = data.get("predecessors", "")
+        preds = [p.strip() for p in str(predecessors_str).split(",") if p.strip() and pd.notna(predecessors_str)]
 
         t = cls(
             task_id=data["id"],
@@ -562,21 +565,30 @@ def compute_successors(tasks: Dict[str, Task]) -> Dict[str, List[str]]:
 
 
 def topological_sort(tasks: Dict[str, Task]) -> List[str]:
-    indeg = {tid: 0 for tid in tasks}
-    for t in tasks.values():
-        for p in t.predecessors:
-            indeg[t.id] += 1
-    q = [tid for tid, deg in indeg.items() if deg == 0]
+    """
+    Performs a topological sort of the tasks in the project.
+    Assumes that task.successors has been pre-computed.
+    """
+    indegree = {tid: len(t.predecessors) for tid, t in tasks.items()}
+
+    queue = [tid for tid, deg in indegree.items() if deg == 0]
     order = []
-    while q:
-        n = q.pop(0)
-        order.append(n)
-        for succ in [tid for tid, tt in tasks.items() if n in tt.predecessors]:
-            indeg[succ] -= 1
-            if indeg[succ] == 0:
-                q.append(succ)
+
+    while queue:
+        task_id = queue.pop(0)
+        order.append(task_id)
+
+        task = tasks[task_id]
+        for successor_id in task.successors:
+            indegree[successor_id] -= 1
+            if indegree[successor_id] == 0:
+                queue.append(successor_id)
+
     if len(order) != len(tasks):
-        raise RuntimeError("Cycle detected in task graph")
+        # For debugging, find the cycle
+        remaining_tasks = set(tasks.keys()) - set(order)
+        raise RuntimeError(f"Cycle detected in task graph. Unresolved tasks: {remaining_tasks}")
+
     return order
 
 

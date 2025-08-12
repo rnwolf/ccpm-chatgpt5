@@ -1,0 +1,8 @@
+id,name,duration,predecessors,resources,description
+CC1,"Critical Task 1",10,,R1,"First task on the critical chain."
+CC2,"Critical Task 2",15,"CC1,FC1B",R1,"Second task on the critical chain, merge point for feeding chain 1."
+CC3,"Critical Task 3",10,"CC2,FC2B",R1,"Third task on the critical chain, merge point for feeding chain 2."
+FC1A,"Feeding Chain 1 - A",8,,R2,"Start of feeding chain 1."
+FC1B,"Feeding Chain 1 - B",7,FC1A,R2,"End of feeding chain 1, merges at CC2."
+FC2A,"Feeding Chain 2 - A",6,,R3,"Start of feeding chain 2."
+FC2B,"Feeding Chain 2 - B",9,FC2A,R3,"End of feeding chain 2, merges at CC3."

@@ -1,0 +1,5 @@
+id,name,duration,predecessors,resources,description
+A,Setup,5,,R1,Initial setup task.
+B,Parallel Task 1,10,A,R2,"First task in parallel, shares resource R2."
+C,Parallel Task 2,10,A,R2,"Second task in parallel, shares resource R2."
+D,Merge,5,"B,C",R1,Final merge task.

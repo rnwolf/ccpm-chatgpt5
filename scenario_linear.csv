@@ -1,0 +1,4 @@
+id,name,duration,predecessors,resources,description
+A,Task A,10,,R1,First task in the chain.
+B,Task B,15,A,R1,Second task in the chain.
+C,Task C,12,B,R1,Third task in the chain.
